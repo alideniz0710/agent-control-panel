@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Agent {
+  id           String         @id @default(cuid())
+  name         String
+  backend      String // "claude-agent-sdk" | "anthropic-api" | "fake"
+  model        String
+  systemPrompt String?
+  tools        String? // JSON string
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  steps        WorkflowStep[]
+  tasks        Task[]
+}
+
+model Workflow {
+  id        String         @id @default(cuid())
+  name      String
+  schedule  String? // cron expression; null = manual only
+  enabled   Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  steps     WorkflowStep[]
+  runs      Run[]
+}
+
+model WorkflowStep {
+  id               String   @id @default(cuid())
+  workflowId       String
+  order            Int
+  agentId          String
+  inputTemplate    String // supports {{previousOutput}}
+  requiresApproval Boolean  @default(false)
+  workflow         Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  agent            Agent    @relation(fields: [agentId], references: [id])
+
+  @@index([workflowId, order])
+}
+
+model Run {
+  id         String    @id @default(cuid())
+  workflowId String
+  status     String // "pending" | "running" | "awaiting_approval" | "done" | "failed"
+  trigger    String // "manual" | "scheduled"
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  totalCost  Float     @default(0)
+  error      String?
+  workflow   Workflow  @relation(fields: [workflowId], references: [id])
+  tasks      Task[]
+
+  @@index([workflowId, startedAt])
+}
+
+model Task {
+  id         String    @id @default(cuid())
+  runId      String
+  stepOrder  Int
+  agentId    String
+  status     String // "queued" | "running" | "awaiting_approval" | "done" | "failed"
+  input      String
+  output     String?
+  tokensIn   Int       @default(0)
+  tokensOut  Int       @default(0)
+  cost       Float     @default(0)
+  error      String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  run        Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agent      Agent     @relation(fields: [agentId], references: [id])
+  logs       LogLine[]
+
+  @@index([status])
+  @@index([runId, stepOrder])
+}
+
+model LogLine {
+  id     String   @id @default(cuid())
+  taskId String
+  at     DateTime @default(now())
+  level  String // "info" | "stdout" | "tool" | "error"
+  text   String
+  task   Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, at])
+}
