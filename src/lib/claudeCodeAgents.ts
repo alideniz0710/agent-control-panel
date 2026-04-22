@@ -111,17 +111,24 @@ export function resolveModelAlias(alias: string | null): string {
 
 // OpenRouter uses a different naming scheme than Anthropic direct.
 // Map Claude Code frontmatter aliases to OpenRouter's anthropic/* model IDs.
+// Aliases point to the LATEST Anthropic release (matches resolveModelAlias
+// above). Any non-alias value passes through as-is, so CC agents can also
+// write e.g. `model: openai/gpt-5` or `model: google/gemini-2.5-pro` in
+// frontmatter and it will be sent verbatim to OpenRouter.
+//
+// Exact OpenRouter model IDs must be verified against
+// https://openrouter.ai/models — 4.6 / 4.7 slugs are best-guess.
 export function resolveModelAliasOpenRouter(alias: string | null): string {
-  if (!alias) return "anthropic/claude-sonnet-4.5";
+  if (!alias) return "anthropic/claude-sonnet-4.6";
   const map: Record<string, string> = {
-    opus: "anthropic/claude-opus-4.5",
-    sonnet: "anthropic/claude-sonnet-4.5",
+    opus: "anthropic/claude-opus-4.7",
+    sonnet: "anthropic/claude-sonnet-4.6",
     haiku: "anthropic/claude-haiku-4.5",
-    inherit: "anthropic/claude-sonnet-4.5",
-    // Anthropic direct -> OpenRouter passthrough (in case user pre-resolved)
-    "claude-opus-4-7": "anthropic/claude-opus-4.5",
+    inherit: "anthropic/claude-sonnet-4.6",
+    // Anthropic direct -> OpenRouter passthrough (in case DB has direct IDs)
+    "claude-opus-4-7": "anthropic/claude-opus-4.7",
     "claude-opus-4-5": "anthropic/claude-opus-4.5",
-    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.5",
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
     "claude-sonnet-4-5": "anthropic/claude-sonnet-4.5",
     "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
     "claude-haiku-4-5": "anthropic/claude-haiku-4.5",

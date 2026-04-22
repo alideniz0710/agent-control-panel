@@ -1,7 +1,19 @@
-// USD per 1M tokens. Keep in sync with https://www.anthropic.com/pricing
-// and https://openrouter.ai/models. Used to compute run cost.
+// USD per 1M tokens. Used to compute run cost for the dashboard.
+//
+// Prices need periodic verification. OpenRouter reports actual cost
+// per request via `usage.cost` (logged as info by openrouter executor),
+// so even stale prices here don't break billing — they just make the
+// dashboard's computed total slightly off.
+//
+// Sources to check when updating:
+//   - Anthropic direct: https://www.anthropic.com/pricing
+//   - OpenRouter catalog: https://openrouter.ai/models
+//
+// Convention: keep Anthropic direct IDs (kebab) AND OpenRouter IDs
+// (provider/slug) together so the same model's two routes share pricing.
+
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  // Anthropic direct
+  // ── Anthropic direct ────────────────────────────────────────────────
   "claude-opus-4-7": { input: 15, output: 75 },
   "claude-opus-4-5": { input: 15, output: 75 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
@@ -9,12 +21,49 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "claude-haiku-4-5-20251001": { input: 1, output: 5 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 
-  // OpenRouter — Anthropic routes (same per-token prices as direct)
+  // ── OpenRouter → Anthropic (same per-token prices as direct) ────────
+  "anthropic/claude-opus-4.7": { input: 15, output: 75 },
   "anthropic/claude-opus-4.5": { input: 15, output: 75 },
   "anthropic/claude-opus-4": { input: 15, output: 75 },
+  "anthropic/claude-sonnet-4.6": { input: 3, output: 15 },
   "anthropic/claude-sonnet-4.5": { input: 3, output: 15 },
   "anthropic/claude-sonnet-4": { input: 3, output: 15 },
   "anthropic/claude-haiku-4.5": { input: 1, output: 5 },
+
+  // ── OpenRouter → OpenAI ─────────────────────────────────────────────
+  // GPT-5 tier (best-guess 2026 pricing — verify on openrouter.ai)
+  "openai/gpt-5": { input: 3, output: 15 },
+  "openai/gpt-5-mini": { input: 0.4, output: 1.6 },
+  "openai/gpt-5-nano": { input: 0.1, output: 0.4 },
+  // GPT-4o family (stable pricing)
+  "openai/gpt-4o": { input: 2.5, output: 10 },
+  "openai/gpt-4o-mini": { input: 0.15, output: 0.6 },
+  // Reasoning models (o-series — expensive, use sparingly)
+  "openai/o3": { input: 15, output: 60 },
+  "openai/o3-mini": { input: 1.1, output: 4.4 },
+  "openai/o4-mini": { input: 1.1, output: 4.4 },
+
+  // ── OpenRouter → Google ─────────────────────────────────────────────
+  // Gemini 2.5 Pro: tiered pricing — under 200k tokens cheaper
+  "google/gemini-2.5-pro": { input: 1.25, output: 10 },
+  "google/gemini-2.5-flash": { input: 0.075, output: 0.3 },
+  "google/gemini-2.5-flash-lite": { input: 0.04, output: 0.15 },
+  // Legacy but still useful
+  "google/gemini-2.0-pro": { input: 1.25, output: 5 },
+  "google/gemini-2.0-flash": { input: 0.075, output: 0.3 },
+
+  // ── OpenRouter → DeepSeek (very cheap, good for batch/data work) ────
+  "deepseek/deepseek-v3": { input: 0.27, output: 1.1 },
+  "deepseek/deepseek-r1": { input: 0.55, output: 2.19 },
+  "deepseek/deepseek-chat": { input: 0.27, output: 1.1 },
+
+  // ── OpenRouter → Meta Llama (open-weight, cheap) ────────────────────
+  "meta-llama/llama-3.3-70b-instruct": { input: 0.23, output: 0.4 },
+  "meta-llama/llama-3.1-405b-instruct": { input: 0.9, output: 0.9 },
+
+  // ── OpenRouter → Mistral ────────────────────────────────────────────
+  "mistralai/mistral-large": { input: 2, output: 6 },
+  "mistralai/mixtral-8x22b-instruct": { input: 0.9, output: 0.9 },
 };
 
 export function priceFor(model: string): { input: number; output: number } {
