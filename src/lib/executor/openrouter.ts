@@ -49,6 +49,10 @@ export const openrouterExecutor: Executor = async ({
     body: JSON.stringify({
       model,
       messages,
+      // Conservative cap — keeps cost/credit bounded per run.
+      // Anthropic direct uses 4096; we go lower because OpenRouter
+      // free/low-credit accounts reject the model's native 64k default.
+      max_tokens: 2048,
       stream: true,
       usage: { include: true },
     }),
