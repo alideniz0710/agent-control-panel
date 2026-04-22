@@ -1,7 +1,11 @@
 import { prisma } from "./prisma";
 import { emitRunEvent } from "./events";
 
-export async function startRun(workflowId: string, trigger: "manual" | "scheduled"): Promise<string> {
+export async function startRun(
+  workflowId: string,
+  trigger: "manual" | "scheduled" | "webhook",
+  firstInput?: string,
+): Promise<string> {
   const workflow = await prisma.workflow.findUnique({
     where: { id: workflowId },
     include: { steps: { orderBy: { order: "asc" } } },
@@ -21,7 +25,9 @@ export async function startRun(workflowId: string, trigger: "manual" | "schedule
           status: idx === 0
             ? s.requiresApproval ? "awaiting_approval" : "queued"
             : "pending",
-          input: idx === 0 ? s.inputTemplate : "",
+          // First step: webhook override wins; otherwise use the step's template.
+          // Later steps get their template substituted with {{previousOutput}} by advanceAfterTask.
+          input: idx === 0 ? (firstInput ?? s.inputTemplate) : "",
         })),
       },
     },
