@@ -70,7 +70,12 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
   const { id } = await params;
-  await prisma.workflow.delete({ where: { id } });
+  // Run -> Workflow FK has no onDelete cascade, so a workflow with runs can't
+  // be deleted directly. Remove runs first (Task and LogLine cascade from Run).
+  await prisma.$transaction(async (tx) => {
+    await tx.run.deleteMany({ where: { workflowId: id } });
+    await tx.workflow.delete({ where: { id } });
+  });
   void reloadSchedules();
   return NextResponse.json({ ok: true });
 }
