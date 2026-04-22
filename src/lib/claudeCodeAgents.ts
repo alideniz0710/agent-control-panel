@@ -108,3 +108,23 @@ export function resolveModelAlias(alias: string | null): string {
   };
   return map[alias.toLowerCase()] ?? alias;
 }
+
+// OpenRouter uses a different naming scheme than Anthropic direct.
+// Map Claude Code frontmatter aliases to OpenRouter's anthropic/* model IDs.
+export function resolveModelAliasOpenRouter(alias: string | null): string {
+  if (!alias) return "anthropic/claude-sonnet-4.5";
+  const map: Record<string, string> = {
+    opus: "anthropic/claude-opus-4.5",
+    sonnet: "anthropic/claude-sonnet-4.5",
+    haiku: "anthropic/claude-haiku-4.5",
+    inherit: "anthropic/claude-sonnet-4.5",
+    // Anthropic direct -> OpenRouter passthrough (in case user pre-resolved)
+    "claude-opus-4-7": "anthropic/claude-opus-4.5",
+    "claude-opus-4-5": "anthropic/claude-opus-4.5",
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.5",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4.5",
+    "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4.5",
+    "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
+  };
+  return map[alias.toLowerCase()] ?? alias;
+}
