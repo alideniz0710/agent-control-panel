@@ -2,9 +2,16 @@ import { fakeExecutor } from "./fake";
 import { anthropicApiExecutor } from "./anthropicApi";
 import { claudeAgentSdkExecutor } from "./claudeAgentSdk";
 import { claudeCodeAgentExecutor } from "./claudeCodeAgent";
+import { openrouterExecutor } from "./openrouter";
 import type { Executor } from "./types";
 
-export const BACKENDS = ["claude-agent-sdk", "claude-code-agent", "anthropic-api", "fake"] as const;
+export const BACKENDS = [
+  "claude-agent-sdk",
+  "claude-code-agent",
+  "anthropic-api",
+  "openrouter",
+  "fake",
+] as const;
 export type Backend = (typeof BACKENDS)[number];
 
 export function getExecutor(backend: string): Executor {
@@ -15,6 +22,8 @@ export function getExecutor(backend: string): Executor {
       return claudeCodeAgentExecutor;
     case "anthropic-api":
       return anthropicApiExecutor;
+    case "openrouter":
+      return openrouterExecutor;
     case "fake":
       return fakeExecutor;
     default:
