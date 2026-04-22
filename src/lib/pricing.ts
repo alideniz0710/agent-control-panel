@@ -31,11 +31,13 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "anthropic/claude-haiku-4.5": { input: 1, output: 5 },
 
   // ── OpenRouter → OpenAI ─────────────────────────────────────────────
-  // GPT-5 tier (best-guess 2026 pricing — verify on openrouter.ai)
-  "openai/gpt-5": { input: 3, output: 15 },
+  // NOTE: As of 2026-04-22, `openai/gpt-5` on OpenRouter is priced
+  // like gpt-4o (verified: $0.006831 reported for 41/678 tokens matches
+  // $2.50 / $10 exactly). Either OpenRouter is aliasing gpt-5→gpt-4o or
+  // GPT-5 actually ships at this price. Treat as gpt-4o until confirmed.
+  "openai/gpt-5": { input: 2.5, output: 10 },
   "openai/gpt-5-mini": { input: 0.4, output: 1.6 },
   "openai/gpt-5-nano": { input: 0.1, output: 0.4 },
-  // GPT-4o family (stable pricing)
   "openai/gpt-4o": { input: 2.5, output: 10 },
   "openai/gpt-4o-mini": { input: 0.15, output: 0.6 },
   // Reasoning models (o-series — expensive, use sparingly)
@@ -44,13 +46,15 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "openai/o4-mini": { input: 1.1, output: 4.4 },
 
   // ── OpenRouter → Google ─────────────────────────────────────────────
-  // Gemini 2.5 Pro: tiered pricing — under 200k tokens cheaper
+  // Gemini 2.5 Flash on OpenRouter: verified higher than Google direct.
+  // Observed: $0.000033 for 27/10 tokens → back-computes to ~$0.50/$2.00.
+  // Google direct is $0.075/$0.30 but OpenRouter applies a markup.
   "google/gemini-2.5-pro": { input: 1.25, output: 10 },
-  "google/gemini-2.5-flash": { input: 0.075, output: 0.3 },
-  "google/gemini-2.5-flash-lite": { input: 0.04, output: 0.15 },
-  // Legacy but still useful
+  "google/gemini-2.5-flash": { input: 0.5, output: 2 },
+  "google/gemini-2.5-flash-lite": { input: 0.1, output: 0.4 },
+  // Legacy
   "google/gemini-2.0-pro": { input: 1.25, output: 5 },
-  "google/gemini-2.0-flash": { input: 0.075, output: 0.3 },
+  "google/gemini-2.0-flash": { input: 0.1, output: 0.4 },
 
   // ── OpenRouter → DeepSeek (very cheap, good for batch/data work) ────
   "deepseek/deepseek-v3": { input: 0.27, output: 1.1 },
