@@ -4,6 +4,7 @@ import { claudeAgentSdkExecutor } from "./claudeAgentSdk";
 import { claudeCodeAgentExecutor } from "./claudeCodeAgent";
 import { openrouterExecutor } from "./openrouter";
 import { openrouterCodeAgentExecutor } from "./openrouterCodeAgent";
+import { telegramExecutor } from "./telegram";
 import type { Executor } from "./types";
 
 export const BACKENDS = [
@@ -12,6 +13,7 @@ export const BACKENDS = [
   "anthropic-api",
   "openrouter",
   "openrouter-code-agent",
+  "telegram",
   "fake",
 ] as const;
 export type Backend = (typeof BACKENDS)[number];
@@ -28,6 +30,8 @@ export function getExecutor(backend: string): Executor {
       return openrouterExecutor;
     case "openrouter-code-agent":
       return openrouterCodeAgentExecutor;
+    case "telegram":
+      return telegramExecutor;
     case "fake":
       return fakeExecutor;
     default:
