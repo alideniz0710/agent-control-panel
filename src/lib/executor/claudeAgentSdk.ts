@@ -5,6 +5,7 @@ export const claudeAgentSdkExecutor: Executor = async ({
   model,
   systemPrompt,
   userInput,
+  tools,
   onLog,
   signal,
 }) => {
@@ -19,6 +20,11 @@ export const claudeAgentSdkExecutor: Executor = async ({
     options.systemPrompt = { type: "preset", preset: "claude_code", append: systemPrompt };
   }
   if (signal) options.abortSignal = signal;
+  const cwd = parseCwd(tools);
+  if (cwd) {
+    options.cwd = cwd;
+    onLog({ level: "info", text: `cwd set to ${cwd}` });
+  }
 
   const iter = query({ prompt: userInput, options: options as never });
 
@@ -56,3 +62,11 @@ export const claudeAgentSdkExecutor: Executor = async ({
 
   return { output: finalText, tokensIn, tokensOut };
 };
+
+function parseCwd(tools: unknown): string | null {
+  if (tools && typeof tools === "object" && !Array.isArray(tools)) {
+    const v = (tools as Record<string, unknown>).cwd;
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return null;
+}
