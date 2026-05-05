@@ -1,6 +1,9 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Executor } from "./types";
 
+const VALID_PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan"] as const;
+type PermissionMode = (typeof VALID_PERMISSION_MODES)[number];
+
 export const claudeAgentSdkExecutor: Executor = async ({
   model,
   systemPrompt,
@@ -20,10 +23,23 @@ export const claudeAgentSdkExecutor: Executor = async ({
     options.systemPrompt = { type: "preset", preset: "claude_code", append: systemPrompt };
   }
   if (signal) options.abortSignal = signal;
+
   const cwd = parseCwd(tools);
   if (cwd) {
     options.cwd = cwd;
     onLog({ level: "info", text: `cwd set to ${cwd}` });
+  }
+
+  const additionalDirectories = parseAdditionalDirectories(tools);
+  if (additionalDirectories.length > 0) {
+    options.additionalDirectories = additionalDirectories;
+    onLog({ level: "info", text: `additionalDirectories: ${additionalDirectories.join(", ")}` });
+  }
+
+  const permissionMode = parsePermissionMode(tools);
+  if (permissionMode) {
+    options.permissionMode = permissionMode;
+    onLog({ level: "info", text: `permissionMode: ${permissionMode}` });
   }
 
   const iter = query({ prompt: userInput, options: options as never });
@@ -69,4 +85,18 @@ function parseCwd(tools: unknown): string | null {
     if (typeof v === "string" && v.length > 0) return v;
   }
   return null;
+}
+
+function parseAdditionalDirectories(tools: unknown): string[] {
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) return [];
+  const v = (tools as Record<string, unknown>).additionalDirectories;
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.length > 0);
+}
+
+function parsePermissionMode(tools: unknown): PermissionMode | null {
+  if (!tools || typeof tools !== "object" || Array.isArray(tools)) return null;
+  const v = (tools as Record<string, unknown>).permissionMode;
+  if (typeof v !== "string") return null;
+  return (VALID_PERMISSION_MODES as readonly string[]).includes(v) ? (v as PermissionMode) : null;
 }
