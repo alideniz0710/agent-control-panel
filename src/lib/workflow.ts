@@ -3,7 +3,7 @@ import { emitRunEvent } from "./events";
 
 export async function startRun(
   workflowId: string,
-  trigger: "manual" | "scheduled" | "webhook",
+  trigger: "manual" | "scheduled" | "webhook" | "telegram",
   firstInput?: string,
 ): Promise<string> {
   const workflow = await prisma.workflow.findUnique({
