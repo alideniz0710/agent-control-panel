@@ -44,8 +44,18 @@ export function findRoute(command: string): CommandRoute | undefined {
 }
 
 export function buildHelp(): string {
-  const lines = TELEGRAM_COMMAND_ROUTES.map(
+  const agents = TELEGRAM_COMMAND_ROUTES.map(
     (r) => `/${r.command} <görev> — ${r.description}`,
   );
-  return ["Komutlar:", ...lines, "", "/help — bu listeyi göster"].join("\n");
+  return [
+    "Agent komutları:",
+    ...agents,
+    "",
+    "Sistem komutları:",
+    "/sync — Mac'in develop branch'ini GitHub'tan günceller (iPad'den merge sonrası kullan)",
+    "/help — bu listeyi göster",
+  ].join("\n");
 }
+
+/** Commands handled directly by the poller (not routed to a workflow). */
+export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set(["sync"]);

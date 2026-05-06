@@ -45,18 +45,24 @@ model WorkflowStep {
 }
 
 model Run {
-  id         String    @id @default(cuid())
-  workflowId String
-  status     String // "pending" | "running" | "awaiting_approval" | "done" | "failed"
-  trigger    String // "manual" | "scheduled"
-  startedAt  DateTime  @default(now())
-  finishedAt DateTime?
-  totalCost  Float     @default(0)
-  error      String?
-  workflow   Workflow  @relation(fields: [workflowId], references: [id])
-  tasks      Task[]
+  id               String    @id @default(cuid())
+  workflowId       String
+  status           String // "pending" | "running" | "awaiting_approval" | "done" | "failed"
+  trigger          String // "manual" | "scheduled" | "webhook" | "telegram"
+  // For Telegram-triggered runs, these let the poller correlate
+  // a follow-up command back to the prior exchange so the agent
+  // gets conversation context across calls.
+  chatId           String?
+  telegramCommand  String?
+  startedAt        DateTime  @default(now())
+  finishedAt       DateTime?
+  totalCost        Float     @default(0)
+  error            String?
+  workflow         Workflow  @relation(fields: [workflowId], references: [id])
+  tasks            Task[]
 
   @@index([workflowId, startedAt])
+  @@index([chatId, telegramCommand, finishedAt])
 }
 
 model Task {

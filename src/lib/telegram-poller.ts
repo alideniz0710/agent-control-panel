@@ -18,8 +18,10 @@ import {
   parseCommand,
   findRoute,
   buildHelp,
+  SYSTEM_COMMANDS,
   TELEGRAM_COMMAND_ROUTES,
 } from "./telegram-router";
+import { handleSyncCommand } from "./telegram-system-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
 const ERROR_BACKOFF_MS = 10_000;     // pause this long after a network/api error
@@ -94,6 +96,15 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     return;
   }
 
+  // System commands: handled inline by the poller, not via workflows.
+  if (SYSTEM_COMMANDS.has(parsed.command)) {
+    if (parsed.command === "sync") {
+      await handleSyncCommand(msg.chat.id, sendTelegram);
+      return;
+    }
+    // Future system commands wire in here.
+  }
+
   // /brief is intentionally NOT routed here — it's handled by the
   // pre-existing scheduled brief workflows. If a user types /brief
   // morning manually, ignore it; the morning-brief workflow fires on
@@ -134,15 +145,73 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     return;
   }
 
+  // Conversation thread: pull the most recent done run for this
+  // chat+command pair within the last hour, and prepend its first-task
+  // input/output as "previous exchange" so the agent sees what we
+  // were just talking about. Without this, every /se call is a fresh
+  // session with no memory of "the plan we just made".
+  const augmentedInput = await augmentWithPriorContext(
+    String(msg.chat.id),
+    parsed.command,
+    parsed.args,
+  );
+
   await sendTelegram(msg.chat.id, `⏳ /${parsed.command}: ${route.description} çalışıyor...`);
 
   try {
-    const runId = await startRun(workflow.id, "telegram", parsed.args);
+    const runId = await startRun(workflow.id, "telegram", augmentedInput, {
+      chatId: String(msg.chat.id),
+      telegramCommand: parsed.command,
+    });
     console.log(`[telegram-poller] /${parsed.command} → run ${runId}`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     await sendTelegram(msg.chat.id, `❌ Workflow hatası: ${message}`);
   }
+}
+
+/** Window we consider for "recent enough" prior exchange. Anything
+ * older than this is treated as a fresh conversation, not a follow-up. */
+const CONVERSATION_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+async function augmentWithPriorContext(
+  chatId: string,
+  command: string,
+  newInput: string,
+): Promise<string> {
+  const cutoff = new Date(Date.now() - CONVERSATION_WINDOW_MS);
+  const prior = await prisma.run.findFirst({
+    where: {
+      chatId,
+      telegramCommand: command,
+      status: "done",
+      finishedAt: { gte: cutoff },
+    },
+    orderBy: { finishedAt: "desc" },
+    include: {
+      tasks: { orderBy: { stepOrder: "asc" }, take: 1 },
+    },
+  });
+
+  if (!prior || prior.tasks.length === 0) return newInput;
+
+  const priorTask = prior.tasks[0];
+  // priorTask.input is the augmented input we sent the LAST time —
+  // possibly already containing earlier context. Don't recursively
+  // pile that on. Use only the OUTPUT (the agent's answer) and a
+  // best-effort "your previous question" extracted from input.
+  const priorAnswer = (priorTask.output ?? "").trim();
+  if (!priorAnswer) return newInput;
+
+  return [
+    "[Bu konuşmada az önce şunu cevapladın:]",
+    "",
+    priorAnswer.length > 4000 ? priorAnswer.slice(0, 4000) + "\n[...kesildi]" : priorAnswer,
+    "",
+    "[Yeni mesajım — yukarıdaki cevabını referans alarak yanıtla:]",
+    "",
+    newInput,
+  ].join("\n");
 }
 
 async function pollOnce(): Promise<void> {

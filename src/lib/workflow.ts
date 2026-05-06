@@ -1,10 +1,21 @@
 import { prisma } from "./prisma";
 import { emitRunEvent } from "./events";
 
+export interface StartRunContext {
+  /** Telegram chat id, when the trigger is "telegram". Used so the
+   * polling worker can correlate a follow-up command back to the
+   * prior exchange and inject conversation context. */
+  chatId?: string;
+  /** Command name the user typed, e.g. "se", "debug", "pa". Pairs
+   * with chatId to look up prior runs. */
+  telegramCommand?: string;
+}
+
 export async function startRun(
   workflowId: string,
   trigger: "manual" | "scheduled" | "webhook" | "telegram",
   firstInput?: string,
+  context?: StartRunContext,
 ): Promise<string> {
   const workflow = await prisma.workflow.findUnique({
     where: { id: workflowId },
@@ -18,6 +29,8 @@ export async function startRun(
       workflowId,
       status: "running",
       trigger,
+      chatId: context?.chatId,
+      telegramCommand: context?.telegramCommand,
       tasks: {
         create: workflow.steps.map((s, idx) => ({
           stepOrder: s.order,
