@@ -51,14 +51,30 @@ export function buildHelp(): string {
     "Agent komutları:",
     ...agents,
     "",
-    "Sistem komutları:",
-    "/sync — Mac'in develop branch'ini GitHub'tan günceller (iPad'den merge sonrası kullan)",
+    "Kontrol komutları (her zaman çalışır, worker meşgul olsa bile):",
+    "/ping — panel hayatta mı?",
+    "/agents — kayıtlı agent listesi",
+    "/auto on|off — auto-merge toggle (Day 4)",
+    "/cap [status|set <usd>] — günlük maliyet limiti",
+    "/kill [<task-id>] — çalışan task'ı durdur",
+    "/deploy [status|retry] — Vercel deploy bilgisi",
+    "/revert <pr-number> — merge edilmiş PR için revert linki",
+    "/sync — Mac'in develop branch'ini GitHub'tan günceller",
     "/help — bu listeyi göster",
   ].join("\n");
 }
 
 /** Commands handled directly by the poller (not routed to a workflow). */
-export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set(["sync"]);
+export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set([
+  "sync",
+  "ping",
+  "auto",
+  "cap",
+  "kill",
+  "deploy",
+  "revert",
+  "agents",
+]);
 
 // Patterns that strongly suggest the user is asking the agent to do
 // something destructive in shell-command form. These are mostly catastrophic

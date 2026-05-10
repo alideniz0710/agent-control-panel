@@ -18,8 +18,16 @@ const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
 // Use globalThis so the route handlers (which import this module from a
 // different bundle in production) see the same `started` flag — same
 // pattern as src/lib/prisma.ts and src/lib/scheduler.ts.
-type WorkerGlobal = { workerStarted?: boolean; workerRunning?: boolean };
+type WorkerGlobal = {
+  workerStarted?: boolean;
+  workerRunning?: boolean;
+  /** taskId -> AbortController, populated while task is in flight.
+   *  Used by /kill command to abort a running task externally. */
+  workerAborters?: Map<string, AbortController>;
+};
 const globalForWorker = globalThis as unknown as WorkerGlobal;
+const aborters = globalForWorker.workerAborters ?? new Map<string, AbortController>();
+globalForWorker.workerAborters = aborters;
 
 async function claimNextTask() {
   return prisma.$transaction(async (tx) => {
@@ -89,18 +97,37 @@ async function safeStashOnTimeout(taskId: string, runId: string, cwd: string | n
   }
 }
 
-/** Race the executor against a timeout. Aborts via signal if possible. */
+/** Race the executor against a timeout. Registers the controller in
+ *  the global aborters map so /kill can abort externally. */
 async function runWithTimeout<T>(
+  taskId: string,
   fn: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
 ): Promise<T> {
   const controller = new AbortController();
+  aborters.set(taskId, controller);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fn(controller.signal);
   } finally {
     clearTimeout(timer);
+    aborters.delete(taskId);
   }
+}
+
+/** Abort a running task externally (e.g., via /kill Telegram command).
+ *  Returns true if a controller was found and aborted, false if task
+ *  isn't currently in flight on this worker. */
+export function killTask(taskId: string): boolean {
+  const ctl = aborters.get(taskId);
+  if (!ctl) return false;
+  ctl.abort();
+  return true;
+}
+
+/** List taskIds currently in flight (for /kill help). */
+export function listInflightTaskIds(): string[] {
+  return Array.from(aborters.keys());
 }
 
 async function processOne() {
@@ -136,7 +163,7 @@ async function processOne() {
 
   try {
     const executor = getExecutor(task.agent.backend);
-    const result = await runWithTimeout(async (signal) => {
+    const result = await runWithTimeout(task.id, async (signal) => {
       return executor({
         model: task.agent.model,
         systemPrompt: task.agent.systemPrompt,

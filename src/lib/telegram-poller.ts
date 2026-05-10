@@ -23,6 +23,15 @@ import {
   TELEGRAM_COMMAND_ROUTES,
 } from "./telegram-router";
 import { handleSyncCommand } from "./telegram-system-commands";
+import {
+  handlePing,
+  handleAuto,
+  handleCap,
+  handleKill,
+  handleDeploy,
+  handleRevert,
+  handleAgents,
+} from "./control-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
 const ERROR_BACKOFF_MS = 10_000;     // pause this long after a network/api error
@@ -143,13 +152,36 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     return;
   }
 
-  // System commands: handled inline by the poller, not via workflows.
+  // System / control commands: handled inline by the poller, not via
+  // workflows. They run on the priority path so they reply fast even
+  // when the worker is busy with a long-running agent task.
   if (SYSTEM_COMMANDS.has(parsed.command)) {
-    if (parsed.command === "sync") {
-      await handleSyncCommand(msg.chat.id, sendTelegram);
-      return;
+    switch (parsed.command) {
+      case "sync":
+        await handleSyncCommand(msg.chat.id, sendTelegram);
+        return;
+      case "ping":
+        await handlePing(msg.chat.id, sendTelegram);
+        return;
+      case "auto":
+        await handleAuto(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "cap":
+        await handleCap(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "kill":
+        await handleKill(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "deploy":
+        await handleDeploy(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "revert":
+        await handleRevert(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "agents":
+        await handleAgents(msg.chat.id, sendTelegram);
+        return;
     }
-    // Future system commands wire in here.
   }
 
   // /brief is intentionally NOT routed here — it's handled by the
