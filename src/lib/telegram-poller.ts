@@ -25,12 +25,31 @@ import { handleSyncCommand } from "./telegram-system-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
 const ERROR_BACKOFF_MS = 10_000;     // pause this long after a network/api error
-const STATE_KEY = "telegram-poller:lastUpdateId";
+const STATE_KEY = "telegram.lastUpdateId";
+
+// Idempotency cap: how many recent message_ids to remember in-process
+// so a poller restart that re-fetches a still-acked message (race with
+// Telegram's offset semantics) doesn't double-handle. Bounded set.
+const PROCESSED_MSGS_MAX = 500;
 
 let started = false;
 let polling = false;
 let stopped = false;
 let lastUpdateId = 0;
+const processedMessageIds = new Set<number>();
+
+function rememberProcessed(updateId: number): void {
+  if (processedMessageIds.size >= PROCESSED_MSGS_MAX) {
+    // Drop the oldest ~half to keep the set bounded.
+    const drop = Math.floor(PROCESSED_MSGS_MAX / 2);
+    let i = 0;
+    for (const id of processedMessageIds) {
+      if (i++ >= drop) break;
+      processedMessageIds.delete(id);
+    }
+  }
+  processedMessageIds.add(updateId);
+}
 
 interface TelegramUpdate {
   update_id: number;
@@ -51,13 +70,28 @@ interface TelegramReply {
 
 async function loadOffset(): Promise<number> {
   // Persist last_update_id across restarts so we don't replay old
-  // commands. Stored in a tiny KV row in a Setting table — but the
-  // current schema has no such table, so we fall back to a single-row
-  // strategy via the runs table's metadata. To stay schema-clean, we
-  // keep it in-memory only and accept that messages sent while the
-  // poller is offline get processed once on boot. Telegram itself
-  // drops updates older than 24h, which is the natural ceiling.
-  return 0;
+  // commands. Stored in the Setting table (key="telegram.lastUpdateId").
+  try {
+    const row = await prisma.setting.findUnique({ where: { key: STATE_KEY } });
+    if (!row) return 0;
+    const n = parseInt(row.value, 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch (e) {
+    console.error("[telegram-poller] loadOffset failed:", e);
+    return 0;
+  }
+}
+
+async function saveOffset(updateId: number): Promise<void> {
+  try {
+    await prisma.setting.upsert({
+      where: { key: STATE_KEY },
+      create: { key: STATE_KEY, value: String(updateId) },
+      update: { value: String(updateId) },
+    });
+  } catch (e) {
+    console.error("[telegram-poller] saveOffset failed:", e);
+  }
 }
 
 async function sendTelegram(chatId: number | string, text: string): Promise<void> {
@@ -244,8 +278,15 @@ async function pollOnce(): Promise<void> {
 
   if (!data.ok || !data.result) return;
 
+  let highestUpdateId = lastUpdateId;
   for (const update of data.result) {
-    lastUpdateId = Math.max(lastUpdateId, update.update_id);
+    highestUpdateId = Math.max(highestUpdateId, update.update_id);
+    if (processedMessageIds.has(update.update_id)) {
+      // Already handled in a previous loop tick (defensive — shouldn't
+      // happen with proper offset tracking, but Telegram occasionally
+      // re-delivers if ack is slow).
+      continue;
+    }
     if (update.message) {
       try {
         await handleMessage(update.message);
@@ -257,6 +298,13 @@ async function pollOnce(): Promise<void> {
         ).catch(() => undefined);
       }
     }
+    rememberProcessed(update.update_id);
+  }
+
+  if (highestUpdateId > lastUpdateId) {
+    lastUpdateId = highestUpdateId;
+    // Persist immediately so a crash between batches doesn't replay.
+    void saveOffset(lastUpdateId);
   }
 }
 
@@ -282,13 +330,20 @@ export function startTelegramPoller(): void {
     return;
   }
   started = true;
+  // Load persisted offset BEFORE starting the loop, so we don't briefly
+  // window-replay old messages while the async load is in flight.
   void loadOffset().then((offset) => {
     lastUpdateId = offset;
+    console.log(
+      `[telegram-poller] started (commands: ${TELEGRAM_COMMAND_ROUTES.map((r) => "/" + r.command).join(", ")}; resume offset=${offset})`,
+    );
+    void loop();
   });
-  console.log(
-    `[telegram-poller] started (commands: ${TELEGRAM_COMMAND_ROUTES.map((r) => "/" + r.command).join(", ")})`,
-  );
-  void loop();
+}
+
+/** Exposed for /api/health endpoint. */
+export function pollerStatus(): { started: boolean; lastUpdateId: number; processedCount: number } {
+  return { started, lastUpdateId, processedCount: processedMessageIds.size };
 }
 
 export function stopTelegramPoller(): void {

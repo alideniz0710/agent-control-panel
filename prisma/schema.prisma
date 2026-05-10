@@ -97,3 +97,15 @@ model LogLine {
 
   @@index([taskId, at])
 }
+
+// Generic key/value store for cross-restart state.
+// Used by:
+//   - "telegram.lastUpdateId"  — Telegram poller offset (avoid replaying old messages on restart)
+//   - "auto.enabled"           — Day 4 auto-merge global toggle ("true" / "false")
+//   - "cap.dailyUsd"           — Day 2 daily cost cap (e.g., "5.00"); null/missing = no cap
+// Single-row pattern, value is always a string (caller parses).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

@@ -1,12 +1,15 @@
 // Public-access gatekeeper.
 //
 // Goal: keep the panel safe when exposed via Tailscale Funnel (or any
-// other public tunnel). The webhook endpoint has its own Bearer-token
-// auth (WEBHOOK_SECRET); the rest of the panel — UI pages and admin
-// API routes — must NOT be reachable by anonymous internet visitors.
+// other public tunnel). The webhook + health endpoints have their own
+// auth model; the rest of the panel — UI pages and admin API routes —
+// must NOT be reachable by anonymous internet visitors.
 //
 // Allowed (no token needed):
-//   - /api/webhook            handles its own auth
+//   - /api/webhook            handles its own auth (Bearer WEBHOOK_SECRET)
+//   - /api/health             liveness probe; only exposes counts/flags
+//                              (no secrets), needs to be hittable by
+//                              external uptime monitors
 //   - direct localhost calls  Host header starts with localhost or 127.
 //   - tailnet members         Tailscale daemon adds Tailscale-User-Login
 //
@@ -16,13 +19,14 @@
 // Everything else gets a 401.
 //
 // If ADMIN_TOKEN is not set in the environment, the only way in for a
-// public visitor is via /api/webhook — i.e. the panel is "tailnet-only
-// + webhook" by default, no extra config needed. Set ADMIN_TOKEN to
-// give yourself a way to admin the panel from a non-tailnet machine.
+// public visitor is via /api/webhook or /api/health — i.e. the panel is
+// "tailnet-only + webhook + health" by default, no extra config needed.
+// Set ADMIN_TOKEN to give yourself a way to admin the panel from a
+// non-tailnet machine.
 
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATH_PREFIXES = ["/api/webhook"];
+const PUBLIC_PATH_PREFIXES = ["/api/webhook", "/api/health"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATH_PREFIXES.some(
