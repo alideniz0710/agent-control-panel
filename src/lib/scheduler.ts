@@ -2,7 +2,19 @@ import cron, { type ScheduledTask } from "node-cron";
 import { prisma } from "./prisma";
 import { startRun } from "./workflow";
 
-const jobs = new Map<string, ScheduledTask>();
+// Why globalThis: Next.js (especially with Turbopack production builds)
+// creates separate module instances for the instrumentation hook vs
+// route handlers. Module-scoped `started` and `jobs Map` would diverge:
+// the route handler's import sees a fresh empty Map even though the
+// instrumentation already populated it. Stashing on globalThis ensures
+// both contexts see the same instance — same pattern as src/lib/prisma.ts.
+type SchedulerGlobal = {
+  schedulerStarted?: boolean;
+  schedulerJobs?: Map<string, ScheduledTask>;
+};
+const globalForScheduler = globalThis as unknown as SchedulerGlobal;
+const jobs = globalForScheduler.schedulerJobs ?? new Map<string, ScheduledTask>();
+globalForScheduler.schedulerJobs = jobs;
 
 // Pin cron interpretation to a fixed timezone so scheduled workflows
 // (e.g., 08:00 morning brief) fire at the same wall-clock time regardless
@@ -41,14 +53,17 @@ export async function reloadSchedules() {
   );
 }
 
-let started = false;
 export async function startScheduler() {
-  if (started) return;
-  started = true;
+  if (globalForScheduler.schedulerStarted) return;
+  globalForScheduler.schedulerStarted = true;
   await reloadSchedules();
 }
 
 /** Exposed for /api/health endpoint. */
 export function schedulerStatus(): { started: boolean; jobCount: number; timezone: string } {
-  return { started, jobCount: jobs.size, timezone: SCHEDULER_TZ };
+  return {
+    started: Boolean(globalForScheduler.schedulerStarted),
+    jobCount: jobs.size,
+    timezone: SCHEDULER_TZ,
+  };
 }

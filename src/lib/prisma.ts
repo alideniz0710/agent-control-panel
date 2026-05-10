@@ -26,10 +26,22 @@ async function enableWalMode(): Promise<void> {
   if (globalForPrisma.prismaWalEnabled) return;
   globalForPrisma.prismaWalEnabled = true;
   try {
-    await prisma.$executeRawUnsafe("PRAGMA journal_mode=WAL;");
-    // Reduce fsync stalls without losing durability across power loss.
-    // Synchronous=NORMAL is the recommended pairing with WAL.
-    await prisma.$executeRawUnsafe("PRAGMA synchronous=NORMAL;");
+    // PRAGMA journal_mode=WAL returns a row with the new mode, so we
+    // must use $queryRawUnsafe (which expects a result set) instead of
+    // $executeRawUnsafe (which expects a no-result write).
+    const modeResult = await prisma.$queryRawUnsafe<Array<{ journal_mode: string }>>(
+      "PRAGMA journal_mode=WAL;",
+    );
+    const mode = modeResult?.[0]?.journal_mode;
+    // synchronous=NORMAL doesn't return a row when assigning, so
+    // $queryRawUnsafe + ignoring the result is fine; $executeRawUnsafe
+    // fails because Prisma sees an unexpected result set on some PRAGMAs.
+    await prisma.$queryRawUnsafe("PRAGMA synchronous=NORMAL;");
+    if (mode && mode.toLowerCase() === "wal") {
+      console.log("[prisma] WAL mode enabled");
+    } else {
+      console.warn(`[prisma] WAL request returned mode='${mode ?? "(unknown)"}'`);
+    }
   } catch (e) {
     console.warn("[prisma] failed to enable WAL mode:", e);
   }

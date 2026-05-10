@@ -32,11 +32,23 @@ const STATE_KEY = "telegram.lastUpdateId";
 // Telegram's offset semantics) doesn't double-handle. Bounded set.
 const PROCESSED_MSGS_MAX = 500;
 
-let started = false;
+// Why globalThis: Next.js can have separate module bundles for the
+// instrumentation hook (where the poller starts) vs route handlers
+// (where pollerStatus() is called by /api/health). Module-scoped state
+// would diverge — the route's pollerStatus would always say
+// `started: false` even though the instrumentation already started it.
+type PollerGlobal = {
+  pollerStarted?: boolean;
+  pollerStopped?: boolean;
+  pollerLastUpdateId?: number;
+  pollerProcessedIds?: Set<number>;
+};
+const globalForPoller = globalThis as unknown as PollerGlobal;
+
 let polling = false;
-let stopped = false;
-let lastUpdateId = 0;
-const processedMessageIds = new Set<number>();
+const processedMessageIds =
+  globalForPoller.pollerProcessedIds ?? new Set<number>();
+globalForPoller.pollerProcessedIds = processedMessageIds;
 
 function rememberProcessed(updateId: number): void {
   if (processedMessageIds.size >= PROCESSED_MSGS_MAX) {
@@ -252,7 +264,7 @@ async function pollOnce(): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return;
 
-  const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=${POLL_TIMEOUT_SECONDS}`;
+  const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${(globalForPoller.pollerLastUpdateId ?? 0) + 1}&timeout=${POLL_TIMEOUT_SECONDS}`;
   let res: Response;
   try {
     res = await fetch(url);
@@ -278,7 +290,8 @@ async function pollOnce(): Promise<void> {
 
   if (!data.ok || !data.result) return;
 
-  let highestUpdateId = lastUpdateId;
+  const startUpdateId = globalForPoller.pollerLastUpdateId ?? 0;
+  let highestUpdateId = startUpdateId;
   for (const update of data.result) {
     highestUpdateId = Math.max(highestUpdateId, update.update_id);
     if (processedMessageIds.has(update.update_id)) {
@@ -301,15 +314,15 @@ async function pollOnce(): Promise<void> {
     rememberProcessed(update.update_id);
   }
 
-  if (highestUpdateId > lastUpdateId) {
-    lastUpdateId = highestUpdateId;
+  if (highestUpdateId > startUpdateId) {
+    globalForPoller.pollerLastUpdateId = highestUpdateId;
     // Persist immediately so a crash between batches doesn't replay.
-    void saveOffset(lastUpdateId);
+    void saveOffset(highestUpdateId);
   }
 }
 
 async function loop(): Promise<void> {
-  while (!stopped) {
+  while (!globalForPoller.pollerStopped) {
     if (polling) return; // safety
     polling = true;
     try {
@@ -324,16 +337,17 @@ async function loop(): Promise<void> {
 }
 
 export function startTelegramPoller(): void {
-  if (started) return;
+  if (globalForPoller.pollerStarted) return;
   if (!process.env.TELEGRAM_BOT_TOKEN) {
     console.log("[telegram-poller] TELEGRAM_BOT_TOKEN not set — skipping");
     return;
   }
-  started = true;
+  globalForPoller.pollerStarted = true;
+  globalForPoller.pollerStopped = false;
   // Load persisted offset BEFORE starting the loop, so we don't briefly
   // window-replay old messages while the async load is in flight.
   void loadOffset().then((offset) => {
-    lastUpdateId = offset;
+    globalForPoller.pollerLastUpdateId = offset;
     console.log(
       `[telegram-poller] started (commands: ${TELEGRAM_COMMAND_ROUTES.map((r) => "/" + r.command).join(", ")}; resume offset=${offset})`,
     );
@@ -343,9 +357,13 @@ export function startTelegramPoller(): void {
 
 /** Exposed for /api/health endpoint. */
 export function pollerStatus(): { started: boolean; lastUpdateId: number; processedCount: number } {
-  return { started, lastUpdateId, processedCount: processedMessageIds.size };
+  return {
+    started: Boolean(globalForPoller.pollerStarted),
+    lastUpdateId: globalForPoller.pollerLastUpdateId ?? 0,
+    processedCount: processedMessageIds.size,
+  };
 }
 
 export function stopTelegramPoller(): void {
-  stopped = true;
+  globalForPoller.pollerStopped = true;
 }
