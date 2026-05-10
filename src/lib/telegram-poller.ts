@@ -18,6 +18,7 @@ import {
   parseCommand,
   findRoute,
   buildHelp,
+  checkDangerous,
   SYSTEM_COMMANDS,
   TELEGRAM_COMMAND_ROUTES,
 } from "./telegram-router";
@@ -176,6 +177,18 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     await sendTelegram(
       msg.chat.id,
       `Boş görev. Örnek: /${parsed.command} <yapılacak iş>`,
+    );
+    return;
+  }
+
+  // Refuse obviously destructive prompts unless explicit confirmation.
+  const danger = checkDangerous(parsed.args);
+  if (danger.isDangerous && !danger.hasConfirm) {
+    await sendTelegram(
+      msg.chat.id,
+      `🛑 Tehlikeli komut/şekilde algılandı: ${danger.matched?.join(", ")}\n\n` +
+        "Eğer GERÇEKTEN bunu istiyorsan, mesajının sonuna `[confirm]` ekle ve tekrar gönder. " +
+        "Aksi halde agent yanlış anlama ile bunu yapabilir.",
     );
     return;
   }

@@ -3,7 +3,9 @@ export async function register() {
   const { startWorker } = await import("./lib/worker");
   const { startScheduler } = await import("./lib/scheduler");
   const { startTelegramPoller } = await import("./lib/telegram-poller");
+  const { startHeartbeat } = await import("./lib/heartbeat");
   startWorker();
   await startScheduler();
   startTelegramPoller();
+  startHeartbeat();
 }

@@ -59,3 +59,44 @@ export function buildHelp(): string {
 
 /** Commands handled directly by the poller (not routed to a workflow). */
 export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set(["sync"]);
+
+// Patterns that strongly suggest the user is asking the agent to do
+// something destructive in shell-command form. These are mostly catastrophic
+// (deletes data, force-pushes, drops tables) and are easy for an agent to
+// misinterpret if buried in a long task description. We refuse such requests
+// unless the user appends a confirmation token, e.g. "/se ... [confirm]".
+//
+// Each pattern is matched case-insensitively against the args text.
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\brm\s+-rf?\b/i, reason: "rm -rf" },
+  { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "git reset --hard" },
+  { pattern: /\bgit\s+push\s+(--force|-f)\b/i, reason: "git push --force" },
+  { pattern: /\bgit\s+clean\s+-[a-zA-Z]*[fd][a-zA-Z]*\b/i, reason: "git clean -fd" },
+  { pattern: /\bdrop\s+table\b/i, reason: "DROP TABLE" },
+  { pattern: /\btruncate\s+table\b/i, reason: "TRUNCATE TABLE" },
+  { pattern: /\bdelete\s+from\b/i, reason: "DELETE FROM" },
+  { pattern: /\b--no-verify\b/i, reason: "--no-verify (skip git hooks)" },
+  { pattern: /\bsudo\s+rm\b/i, reason: "sudo rm" },
+  { pattern: /\bchmod\s+777\b/i, reason: "chmod 777" },
+];
+
+/** Phrase the user can append to opt out of the safety check for a single command. */
+const CONFIRM_TOKEN = /\[confirm\]/i;
+
+export interface DangerousCheck {
+  isDangerous: boolean;
+  matched?: string[];
+  hasConfirm: boolean;
+}
+
+export function checkDangerous(text: string): DangerousCheck {
+  const matched: string[] = [];
+  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+    if (pattern.test(text)) matched.push(reason);
+  }
+  return {
+    isDangerous: matched.length > 0,
+    matched: matched.length ? matched : undefined,
+    hasConfirm: CONFIRM_TOKEN.test(text),
+  };
+}
