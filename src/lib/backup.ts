@@ -37,11 +37,24 @@ function dbPath(): string {
 
 // ── B2 native API ───────────────────────────────────────────────────────
 
+// B2 v3 auth response. Different from v2 (no top-level apiUrl, no top-level
+// "allowed" — instead apiInfo.storageApi nested object holds the cluster
+// URL + scoped bucket info).
 interface B2AuthResponse {
   authorizationToken: string;
-  apiUrl: string;
   accountId: string;
-  allowed: { bucketId: string | null; bucketName: string | null };
+  apiInfo: {
+    storageApi: {
+      apiUrl: string;
+      bucketId: string | null;
+      bucketName: string | null;
+    };
+  };
+}
+
+// Helper: return the cluster API URL from a v3 auth response.
+function apiUrl(auth: B2AuthResponse): string {
+  return auth.apiInfo.storageApi.apiUrl;
 }
 
 interface B2UploadAuth {
@@ -76,10 +89,11 @@ async function b2Authorize(): Promise<B2AuthResponse> {
 
 async function b2ResolveBucketId(auth: B2AuthResponse, bucketName: string): Promise<string> {
   // If the application key is scoped to a single bucket, we already have its ID
-  if (auth.allowed.bucketId && auth.allowed.bucketName === bucketName) {
-    return auth.allowed.bucketId;
+  const scoped = auth.apiInfo.storageApi;
+  if (scoped.bucketId && scoped.bucketName === bucketName) {
+    return scoped.bucketId;
   }
-  const res = await fetch(`${auth.apiUrl}/b2api/v3/b2_list_buckets`, {
+  const res = await fetch(`${apiUrl(auth)}/b2api/v3/b2_list_buckets`, {
     method: "POST",
     headers: {
       Authorization: auth.authorizationToken,
@@ -95,7 +109,7 @@ async function b2ResolveBucketId(auth: B2AuthResponse, bucketName: string): Prom
 }
 
 async function b2GetUploadAuth(auth: B2AuthResponse, bucketId: string): Promise<B2UploadAuth> {
-  const res = await fetch(`${auth.apiUrl}/b2api/v3/b2_get_upload_url`, {
+  const res = await fetch(`${apiUrl(auth)}/b2api/v3/b2_get_upload_url`, {
     method: "POST",
     headers: {
       Authorization: auth.authorizationToken,
@@ -132,7 +146,7 @@ async function b2UploadFile(
 }
 
 async function b2DeleteFile(auth: B2AuthResponse, fileId: string, fileName: string): Promise<void> {
-  const res = await fetch(`${auth.apiUrl}/b2api/v3/b2_delete_file_version`, {
+  const res = await fetch(`${apiUrl(auth)}/b2api/v3/b2_delete_file_version`, {
     method: "POST",
     headers: {
       Authorization: auth.authorizationToken,
@@ -200,7 +214,7 @@ export async function listBackups(): Promise<B2File[]> {
   const auth = await b2Authorize();
   const bucketId = await b2ResolveBucketId(auth, bucketName);
 
-  const res = await fetch(`${auth.apiUrl}/b2api/v3/b2_list_file_names`, {
+  const res = await fetch(`${apiUrl(auth)}/b2api/v3/b2_list_file_names`, {
     method: "POST",
     headers: {
       Authorization: auth.authorizationToken,
