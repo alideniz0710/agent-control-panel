@@ -11,23 +11,36 @@ const execAsync = promisify(childExec);
 
 const POLL_INTERVAL_MS = 2000;
 // Default per-task wall-clock cap. Override per agent via tools.timeoutMs.
-// Set generously: code-using agents on big repos can legitimately take
-// several minutes. Anything past this is almost always a hung subprocess.
 const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
 
-// Use globalThis so the route handlers (which import this module from a
-// different bundle in production) see the same `started` flag — same
-// pattern as src/lib/prisma.ts and src/lib/scheduler.ts.
+// Concurrency cap. 3 is the sweet spot for the orchestrator pattern:
+//   slot 1: dispatcher (blocks waiting for sub-run)
+//   slot 2-3: sub-tasks of the dispatched plan
+// Override via MAX_CONCURRENT_TASKS env. Set generously high enough to
+// avoid dispatcher-starves-sub-task deadlock; the Anthropic API will
+// rate-limit before the worker itself becomes a bottleneck.
+const MAX_CONCURRENT_TASKS = (() => {
+  const raw = process.env.MAX_CONCURRENT_TASKS;
+  if (!raw) return 3;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return 3;
+  return Math.min(n, 16); // sanity cap
+})();
+
+// Use globalThis so route handlers (which import this module from a
+// different bundle in production) see the same state — same pattern
+// as src/lib/prisma.ts and src/lib/scheduler.ts.
 type WorkerGlobal = {
   workerStarted?: boolean;
-  workerRunning?: boolean;
-  /** taskId -> AbortController, populated while task is in flight.
-   *  Used by /kill command to abort a running task externally. */
+  /** taskId -> AbortController for in-flight tasks. Size = inflight count
+   *  AND used by /kill to abort externally. */
   workerAborters?: Map<string, AbortController>;
 };
 const globalForWorker = globalThis as unknown as WorkerGlobal;
 const aborters = globalForWorker.workerAborters ?? new Map<string, AbortController>();
 globalForWorker.workerAborters = aborters;
+
+// ── helpers ────────────────────────────────────────────────────────────
 
 async function claimNextTask() {
   return prisma.$transaction(async (tx) => {
@@ -41,8 +54,6 @@ async function claimNextTask() {
       data: { status: "running", startedAt: new Date() },
       include: {
         agent: true,
-        // Need the step record to read its model/condition/parallelGroupId
-        // overrides set by the orchestrator's dynamic workflows.
         run: { include: { workflow: { include: { steps: { orderBy: { order: "asc" } } } } } },
       },
     });
@@ -50,20 +61,18 @@ async function claimNextTask() {
   });
 }
 
-/** Look up the WorkflowStep record for a given task. Returns null if
- *  the step doesn't exist (shouldn't happen in normal operation). */
+type ClaimedTask = NonNullable<Awaited<ReturnType<typeof claimNextTask>>>;
+
+/** Look up the WorkflowStep record for a given task. */
 function findStepForTask(task: { stepOrder: number; run: { workflow: { steps: Array<{ order: number; model: string | null }> } } }): { order: number; model: string | null } | null {
   return task.run.workflow.steps.find((s) => s.order === task.stepOrder) ?? null;
 }
 
 async function writeLog(taskId: string, runId: string, level: string, text: string) {
-  await prisma.logLine.create({
-    data: { taskId, level, text },
-  });
+  await prisma.logLine.create({ data: { taskId, level, text } });
   emitRunEvent(runId, { kind: "log", taskId, level, text, at: new Date().toISOString() });
 }
 
-/** Parse per-agent timeout override from tools JSON. */
 function parseTimeoutMs(toolsJson: string | null): number {
   if (!toolsJson) return DEFAULT_TASK_TIMEOUT_MS;
   try {
@@ -72,12 +81,11 @@ function parseTimeoutMs(toolsJson: string | null): number {
       return t.timeoutMs;
     }
   } catch {
-    // ignore — invalid tools JSON falls back to default
+    // ignore
   }
   return DEFAULT_TASK_TIMEOUT_MS;
 }
 
-/** Parse per-agent cwd override from tools JSON, for the safe-terminator git stash. */
 function parseCwd(toolsJson: string | null): string | null {
   if (!toolsJson) return null;
   try {
@@ -89,8 +97,6 @@ function parseCwd(toolsJson: string | null): string | null {
   return null;
 }
 
-/** Best-effort capture of half-written files when a task times out, so a
- *  later /se can recover them. Logs the stash ref to the task's error. */
 async function safeStashOnTimeout(taskId: string, runId: string, cwd: string | null): Promise<string | null> {
   if (!cwd) return null;
   try {
@@ -108,8 +114,6 @@ async function safeStashOnTimeout(taskId: string, runId: string, cwd: string | n
   }
 }
 
-/** Race the executor against a timeout. Registers the controller in
- *  the global aborters map so /kill can abort externally. */
 async function runWithTimeout<T>(
   taskId: string,
   fn: (signal: AbortSignal) => Promise<T>,
@@ -126,9 +130,6 @@ async function runWithTimeout<T>(
   }
 }
 
-/** Abort a running task externally (e.g., via /kill Telegram command).
- *  Returns true if a controller was found and aborted, false if task
- *  isn't currently in flight on this worker. */
 export function killTask(taskId: string): boolean {
   const ctl = aborters.get(taskId);
   if (!ctl) return false;
@@ -136,47 +137,24 @@ export function killTask(taskId: string): boolean {
   return true;
 }
 
-/** List taskIds currently in flight (for /kill help). */
 export function listInflightTaskIds(): string[] {
   return Array.from(aborters.keys());
 }
 
-async function processOne() {
-  // Cost cap pre-flight — skip claiming if we're over today's budget.
-  // Don't fail tasks; just don't pull more off the queue.
-  try {
-    await assertUnderCap();
-  } catch (e) {
-    if (e instanceof CostCapExceededError) {
-      // Throttle the log so we don't spam every poll tick.
-      const stamp = Math.floor(Date.now() / 60_000);
-      if (stamp !== capLastLoggedStamp) {
-        capLastLoggedStamp = stamp;
-        console.warn(`[worker] ${e.message}; pausing task pulls`);
-      }
-      return false;
-    }
-    throw e;
-  }
+// ── execution ──────────────────────────────────────────────────────────
 
-  const task = await claimNextTask();
-  if (!task) return false;
+let capLastLoggedStamp = 0;
 
-  emitRunEvent(task.runId, {
-    kind: "task-status",
-    taskId: task.id,
-    status: "running",
-    stepOrder: task.stepOrder,
-  });
-
+/** Run a single claimed task. Doesn't throw — all failure paths update
+ *  the DB and mark the run failed via failRun(). Loops over the task's
+ *  lifecycle: run executor with timeout, update task on done/failed,
+ *  cascade to advanceAfterTask which queues the next step. */
+async function executeTask(task: ClaimedTask): Promise<void> {
   const timeoutMs = parseTimeoutMs(task.agent.tools);
   let timedOut = false;
 
   try {
     const executor = getExecutor(task.agent.backend);
-    // Per-step model override: if the WorkflowStep specifies its own
-    // model (set by the orchestrator's dynamic plans), use that.
-    // Otherwise fall back to the agent's default model.
     const step = findStepForTask(task);
     const effectiveModel = step?.model ?? task.agent.model;
     if (step?.model && step.model !== task.agent.model) {
@@ -218,9 +196,6 @@ async function processOne() {
     await advanceAfterTask(task.id, result.output);
   } catch (err) {
     let message = err instanceof Error ? err.message : String(err);
-
-    // AbortSignal-aborted fetches surface as a few different shapes.
-    // Match common ones to recognize timeout vs other failures.
     const errName = err instanceof Error ? err.name : "";
     if (
       errName === "AbortError" ||
@@ -236,7 +211,7 @@ async function processOne() {
       }
     }
 
-    await writeLog(task.id, task.runId, "error", message);
+    await writeLog(task.id, task.runId, "error", message).catch(() => undefined);
     await prisma.task.update({
       where: { id: task.id },
       data: {
@@ -244,33 +219,75 @@ async function processOne() {
         finishedAt: new Date(),
         error: message,
       },
-    });
+    }).catch(() => undefined);
     emitRunEvent(task.runId, {
       kind: "task-status",
       taskId: task.id,
       status: timedOut ? "timeout" : "failed",
       stepOrder: task.stepOrder,
     });
-    await failRun(task.runId, `step ${task.stepOrder} ${timedOut ? "timed out" : "failed"}: ${message}`);
+    await failRun(task.runId, `step ${task.stepOrder} ${timedOut ? "timed out" : "failed"}: ${message}`).catch(() => undefined);
   }
+}
+
+/** Try to claim and START (fire-and-forget) one queued task. Returns
+ *  true if a task was started, false if nothing to start (queue empty,
+ *  cap hit, or concurrency exhausted). */
+async function tryClaimAndStart(): Promise<boolean> {
+  // Cost cap pre-flight — skip claiming if over today's budget. Throttle
+  // the log so we don't spam every poll tick.
+  try {
+    await assertUnderCap();
+  } catch (e) {
+    if (e instanceof CostCapExceededError) {
+      const stamp = Math.floor(Date.now() / 60_000);
+      if (stamp !== capLastLoggedStamp) {
+        capLastLoggedStamp = stamp;
+        console.warn(`[worker] ${e.message}; pausing task pulls`);
+      }
+      return false;
+    }
+    throw e;
+  }
+
+  const task = await claimNextTask();
+  if (!task) return false;
+
+  emitRunEvent(task.runId, {
+    kind: "task-status",
+    taskId: task.id,
+    status: "running",
+    stepOrder: task.stepOrder,
+  });
+
+  // Fire and forget — DON'T await. This is the key to parallelism: the
+  // tryClaimAndStart caller can immediately claim another task while
+  // this one runs in the background. AbortController registration
+  // happens inside runWithTimeout, so aborters.size bumps right after
+  // executeTask starts and decrements in its finally.
+  void executeTask(task).catch((e) =>
+    console.error(`[worker] executeTask ${task.id} unexpected error:`, e),
+  );
+
   return true;
 }
 
-let capLastLoggedStamp = 0;
-
-async function loop() {
-  if (globalForWorker.workerRunning) return;
-  globalForWorker.workerRunning = true;
-  try {
-    while (await processOne()) {
-      // drain
-    }
-  } finally {
-    globalForWorker.workerRunning = false;
+/** Poll tick: claim and start up to MAX_CONCURRENT_TASKS tasks. */
+async function loop(): Promise<void> {
+  // No re-entry guard needed — each call only tries to fill empty slots.
+  // If a previous tick is still claiming, aborters.size will have been
+  // bumped by it (via executeTask) and this tick will see the right count.
+  while (aborters.size < MAX_CONCURRENT_TASKS) {
+    const started = await tryClaimAndStart();
+    if (!started) break;
   }
 }
 
+// ── recovery + lifecycle ──────────────────────────────────────────────
+
 export async function recoverInflight() {
+  // Mark any task that was "running" before this process started as
+  // failed (its worker died mid-execution).
   const stuck = await prisma.task.findMany({ where: { status: "running" } });
   for (const t of stuck) {
     await prisma.task.update({
@@ -278,6 +295,39 @@ export async function recoverInflight() {
       data: { status: "failed", error: "worker restarted mid-run", finishedAt: new Date() },
     });
     await failRun(t.runId, "worker restarted while task was running");
+  }
+  // Also clean up runs that have NO running task but somehow have status
+  // "running" with all child tasks in terminal states OR queued/pending
+  // that depend on a failed step. The dispatcher deadlock can leave runs
+  // in this state — easier to nuke them here than reason about every path.
+  const stuckRuns = await prisma.run.findMany({
+    where: { status: "running" },
+    include: { tasks: true },
+  });
+  for (const run of stuckRuns) {
+    const hasRunning = run.tasks.some((t) => t.status === "running");
+    if (hasRunning) continue; // active, leave alone
+    const allTerminalOrIdle = run.tasks.every(
+      (t) =>
+        t.status === "done" ||
+        t.status === "failed" ||
+        t.status === "timeout" ||
+        t.status === "skipped" ||
+        t.status === "queued" ||
+        t.status === "pending" ||
+        t.status === "awaiting_approval",
+    );
+    if (!allTerminalOrIdle) continue;
+    // If any task is failed/timeout, mark run failed. If all are done, mark done.
+    // If still has queued/pending/awaiting, leave it (worker will pick up).
+    const hasFailed = run.tasks.some((t) => t.status === "failed" || t.status === "timeout");
+    const hasIdle = run.tasks.some((t) => t.status === "queued" || t.status === "pending" || t.status === "awaiting_approval");
+    if (hasFailed && !hasIdle) {
+      await prisma.run.update({
+        where: { id: run.id },
+        data: { status: "failed", finishedAt: new Date(), error: "recovered: tasks failed, no active path" },
+      });
+    }
   }
 }
 
@@ -288,13 +338,18 @@ export function startWorker() {
   setInterval(() => {
     void loop().catch((e) => console.error("[worker] loop error", e));
   }, POLL_INTERVAL_MS);
-  console.log("[worker] started");
+  console.log(`[worker] started (max concurrent: ${MAX_CONCURRENT_TASKS})`);
 }
 
 /** Exposed for /api/health endpoint. */
-export function workerStatus(): { started: boolean; running: boolean } {
+export function workerStatus(): {
+  started: boolean;
+  inFlight: number;
+  maxConcurrent: number;
+} {
   return {
     started: Boolean(globalForWorker.workerStarted),
-    running: Boolean(globalForWorker.workerRunning),
+    inFlight: aborters.size,
+    maxConcurrent: MAX_CONCURRENT_TASKS,
   };
 }
