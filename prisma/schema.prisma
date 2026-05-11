@@ -38,6 +38,20 @@ model WorkflowStep {
   agentId          String
   inputTemplate    String // supports {{previousOutput}}
   requiresApproval Boolean  @default(false)
+  // Day 4: per-step model override. NULL = use the agent's default model.
+  // Set by the orchestrator's dynamic plans so a single specialist can be
+  // invoked with Haiku for cheap classification and Sonnet for heavy work
+  // in the same run without redefining the agent.
+  model            String?
+  // Day 4: conditional execution. Simple substring match against the
+  // previous step's output. Example: "NEEDS-WORK" means "skip this step
+  // unless the previous step's output contains 'NEEDS-WORK'".
+  // NULL = always run.
+  condition        String?
+  // Day 4: parallel grouping. Steps with the same non-null parallelGroupId
+  // are executed concurrently by the parallel worker (Day 5). NULL = run
+  // sequentially in `order`.
+  parallelGroupId  String?
   workflow         Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   agent            Agent    @relation(fields: [agentId], references: [id])
 

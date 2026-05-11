@@ -74,6 +74,31 @@ export async function advanceAfterTask(taskId: string, output: string) {
   const step = task.run.workflow.steps.find((s) => s.order === nextTask.stepOrder);
   if (!step) return;
 
+  // Day 4: conditional skip. If the step has a `condition` and the
+  // previous output doesn't contain it (case-insensitive substring),
+  // mark this step skipped and recurse into the one after.
+  if (step.condition && !output.toLowerCase().includes(step.condition.toLowerCase())) {
+    await prisma.task.update({
+      where: { id: nextTask.id },
+      data: {
+        status: "skipped",
+        input: `(skipped: condition '${step.condition}' not met)`,
+        finishedAt: new Date(),
+        output: "",
+      },
+    });
+    emitRunEvent(task.runId, {
+      kind: "task-status",
+      taskId: nextTask.id,
+      status: "skipped",
+      stepOrder: nextTask.stepOrder,
+    });
+    // Recurse: continue from this skipped task as if it produced empty
+    // output, so the chain advances to the step after it.
+    await advanceAfterTask(nextTask.id, "");
+    return;
+  }
+
   const rendered = step.inputTemplate.replace(/\{\{\s*previousOutput\s*\}\}/g, output);
   const newStatus = step.requiresApproval ? "awaiting_approval" : "queued";
 

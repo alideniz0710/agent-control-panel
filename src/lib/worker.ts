@@ -39,10 +39,21 @@ async function claimNextTask() {
     const updated = await tx.task.update({
       where: { id: task.id },
       data: { status: "running", startedAt: new Date() },
-      include: { agent: true },
+      include: {
+        agent: true,
+        // Need the step record to read its model/condition/parallelGroupId
+        // overrides set by the orchestrator's dynamic workflows.
+        run: { include: { workflow: { include: { steps: { orderBy: { order: "asc" } } } } } },
+      },
     });
     return updated;
   });
+}
+
+/** Look up the WorkflowStep record for a given task. Returns null if
+ *  the step doesn't exist (shouldn't happen in normal operation). */
+function findStepForTask(task: { stepOrder: number; run: { workflow: { steps: Array<{ order: number; model: string | null }> } } }): { order: number; model: string | null } | null {
+  return task.run.workflow.steps.find((s) => s.order === task.stepOrder) ?? null;
 }
 
 async function writeLog(taskId: string, runId: string, level: string, text: string) {
@@ -163,9 +174,17 @@ async function processOne() {
 
   try {
     const executor = getExecutor(task.agent.backend);
+    // Per-step model override: if the WorkflowStep specifies its own
+    // model (set by the orchestrator's dynamic plans), use that.
+    // Otherwise fall back to the agent's default model.
+    const step = findStepForTask(task);
+    const effectiveModel = step?.model ?? task.agent.model;
+    if (step?.model && step.model !== task.agent.model) {
+      await writeLog(task.id, task.runId, "info", `model override: ${step.model} (agent default: ${task.agent.model})`);
+    }
     const result = await runWithTimeout(task.id, async (signal) => {
       return executor({
-        model: task.agent.model,
+        model: effectiveModel,
         systemPrompt: task.agent.systemPrompt,
         userInput: task.input,
         tools: task.agent.tools ? JSON.parse(task.agent.tools) : undefined,
@@ -176,7 +195,7 @@ async function processOne() {
       });
     }, timeoutMs);
 
-    const cost = computeCost(task.agent.model, result.tokensIn, result.tokensOut);
+    const cost = computeCost(effectiveModel, result.tokensIn, result.tokensOut);
     await prisma.task.update({
       where: { id: task.id },
       data: {

@@ -5,6 +5,7 @@ import { claudeCodeAgentExecutor } from "./claudeCodeAgent";
 import { openrouterExecutor } from "./openrouter";
 import { openrouterCodeAgentExecutor } from "./openrouterCodeAgent";
 import { telegramExecutor } from "./telegram";
+import { dispatcherExecutor } from "./dispatcher";
 import type { Executor } from "./types";
 
 export const BACKENDS = [
@@ -14,6 +15,7 @@ export const BACKENDS = [
   "openrouter",
   "openrouter-code-agent",
   "telegram",
+  "dispatcher",
   "fake",
 ] as const;
 export type Backend = (typeof BACKENDS)[number];
@@ -32,6 +34,8 @@ export function getExecutor(backend: string): Executor {
       return openrouterCodeAgentExecutor;
     case "telegram":
       return telegramExecutor;
+    case "dispatcher":
+      return dispatcherExecutor;
     case "fake":
       return fakeExecutor;
     default:

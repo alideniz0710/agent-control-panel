@@ -131,6 +131,39 @@ async function sendTelegram(chatId: number | string, text: string): Promise<void
   }
 }
 
+// Name of the workflow that handles plain-language (non-slash) Telegram
+// messages by routing through cc:startup-orchestrator. Must exist in the
+// DB (seeded via curl or by the panel boot helper).
+const ORCHESTRATOR_WORKFLOW = "tg-orchestrator";
+
+async function dispatchToOrchestrator(chatId: number | string, text: string): Promise<void> {
+  const workflow = await prisma.workflow.findFirst({
+    where: { name: ORCHESTRATOR_WORKFLOW, enabled: true },
+  });
+  if (!workflow) {
+    await sendTelegram(
+      chatId,
+      `Orchestrator workflow yok. Slash komut kullan (/help) veya '${ORCHESTRATOR_WORKFLOW}' workflow'unu seed et.`,
+    );
+    return;
+  }
+  // Conversation thread: orchestrator-driven messages share a single
+  // (chatId, "orchestrator") namespace so follow-ups like "yukarıdakini
+  // uygula" see the prior exchange.
+  const augmented = await augmentWithPriorContext(String(chatId), "orchestrator", text);
+  await sendTelegram(chatId, "⏳ orchestrator planlıyor...");
+  try {
+    const runId = await startRun(workflow.id, "telegram", augmented, {
+      chatId: String(chatId),
+      telegramCommand: "orchestrator",
+    });
+    console.log(`[telegram-poller] plain text → orchestrator run ${runId}`);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await sendTelegram(chatId, `❌ Orchestrator hatası: ${message}`);
+  }
+}
+
 async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
   if (!msg.text) return;
 
@@ -143,12 +176,25 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
 
   const parsed = parseCommand(msg.text);
   if (!parsed) {
-    // Plain text: we don't engage. Optional: gentle "use /help" reminder.
+    // Day 4: plain text routes to the orchestrator workflow by default.
+    // Founder doesn't need to remember /se vs /debug vs /pa — just types
+    // what they want done. Power users can still use slash commands.
+    await dispatchToOrchestrator(msg.chat.id, msg.text);
     return;
   }
 
   if (parsed.command === "help" || parsed.command === "start") {
     await sendTelegram(msg.chat.id, buildHelp());
+    return;
+  }
+
+  // /o <task> = explicit orchestrator alias (same as plain text)
+  if (parsed.command === "o") {
+    if (!parsed.args) {
+      await sendTelegram(msg.chat.id, "Usage: /o <doğal dilde görev>\nÖr: /o splitbill ana sayfaya animasyon ekle");
+      return;
+    }
+    await dispatchToOrchestrator(msg.chat.id, parsed.args);
     return;
   }
 
