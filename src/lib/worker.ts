@@ -145,35 +145,103 @@ export function listInflightTaskIds(): string[] {
 
 let capLastLoggedStamp = 0;
 
+/** Smart model fallback ladder. If a Claude model times out or returns
+ *  5xx/529 (overloaded), one retry happens with the next-tier model.
+ *  Only Claude models in this ladder; other providers (OpenRouter, etc.)
+ *  don't fall back here. */
+const FALLBACK_LADDER: Record<string, string> = {
+  "claude-haiku-4-5": "claude-sonnet-4-6",
+  "claude-haiku-4-5-20251001": "claude-sonnet-4-6",
+  "claude-sonnet-4-6": "claude-opus-4-7",
+  "claude-sonnet-4-5": "claude-opus-4-7",
+};
+
+function nextTierModel(model: string): string | null {
+  return FALLBACK_LADDER[model] ?? null;
+}
+
+/** Heuristic: should this error trigger a model-fallback retry? */
+function isRetryableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return true;
+  const msg = err.message.toLowerCase();
+  if (msg.includes("aborted")) return true;
+  if (msg.includes("the operation was aborted")) return true;
+  // Anthropic-side overload / rate
+  if (msg.includes("529") || msg.includes("overloaded")) return true;
+  if (msg.includes("502") || msg.includes("503") || msg.includes("504")) return true;
+  if (msg.includes("rate_limit") || msg.includes("rate limit")) return true;
+  if (msg.includes("fetch failed")) return true;
+  return false;
+}
+
 /** Run a single claimed task. Doesn't throw — all failure paths update
  *  the DB and mark the run failed via failRun(). Loops over the task's
- *  lifecycle: run executor with timeout, update task on done/failed,
- *  cascade to advanceAfterTask which queues the next step. */
+ *  lifecycle: run executor with timeout (with optional model fallback),
+ *  update task on done/failed, cascade to advanceAfterTask. */
 async function executeTask(task: ClaimedTask): Promise<void> {
   const timeoutMs = parseTimeoutMs(task.agent.tools);
   let timedOut = false;
 
-  try {
-    const executor = getExecutor(task.agent.backend);
-    const step = findStepForTask(task);
-    const effectiveModel = step?.model ?? task.agent.model;
-    if (step?.model && step.model !== task.agent.model) {
-      await writeLog(task.id, task.runId, "info", `model override: ${step.model} (agent default: ${task.agent.model})`);
-    }
-    const result = await runWithTimeout(task.id, async (signal) => {
-      return executor({
-        model: effectiveModel,
-        systemPrompt: task.agent.systemPrompt,
-        userInput: task.input,
-        tools: task.agent.tools ? JSON.parse(task.agent.tools) : undefined,
-        signal,
-        onLog: (entry) => {
-          void writeLog(task.id, task.runId, entry.level, entry.text);
-        },
-      });
-    }, timeoutMs);
+  const executor = getExecutor(task.agent.backend);
+  const step = findStepForTask(task);
+  const initialModel = step?.model ?? task.agent.model;
+  if (step?.model && step.model !== task.agent.model) {
+    await writeLog(task.id, task.runId, "info", `model override: ${step.model} (agent default: ${task.agent.model})`);
+  }
+  const tools = task.agent.tools ? JSON.parse(task.agent.tools) : undefined;
 
-    const cost = computeCost(effectiveModel, result.tokensIn, result.tokensOut);
+  // Try sequence: [initial, fallback?]. fallback only attempted once and
+  // only if the error looks retryable AND a higher-tier model is in the
+  // ladder.
+  const attemptModels: string[] = [initialModel];
+  const fallback = nextTierModel(initialModel);
+  if (fallback) attemptModels.push(fallback);
+
+  let lastErr: unknown = null;
+  let succeeded = false;
+  let result: { output: string; tokensIn: number; tokensOut: number } | null = null;
+  let usedModel = initialModel;
+
+  for (let i = 0; i < attemptModels.length; i++) {
+    const tryModel = attemptModels[i];
+    try {
+      result = await runWithTimeout(task.id, async (signal) => {
+        return executor({
+          model: tryModel,
+          systemPrompt: task.agent.systemPrompt,
+          userInput: task.input,
+          tools,
+          signal,
+          onLog: (entry) => {
+            void writeLog(task.id, task.runId, entry.level, entry.text);
+          },
+        });
+      }, timeoutMs);
+      usedModel = tryModel;
+      succeeded = true;
+      break;
+    } catch (err) {
+      lastErr = err;
+      // If we have a next attempt to try AND the error is retryable, log and continue.
+      const hasNext = i < attemptModels.length - 1;
+      if (hasNext && isRetryableError(err)) {
+        const next = attemptModels[i + 1];
+        await writeLog(
+          task.id,
+          task.runId,
+          "info",
+          `fallback: ${tryModel} failed (${err instanceof Error ? err.message.slice(0, 100) : String(err).slice(0, 100)}), retrying with ${next}`,
+        );
+        continue;
+      }
+      // No more attempts or error not retryable: fall through to failure handling.
+      break;
+    }
+  }
+
+  if (succeeded && result) {
+    const cost = computeCost(usedModel, result.tokensIn, result.tokensOut);
     await prisma.task.update({
       where: { id: task.id },
       data: {
@@ -194,40 +262,46 @@ async function executeTask(task: ClaimedTask): Promise<void> {
       output: result.output,
     });
     await advanceAfterTask(task.id, result.output);
-  } catch (err) {
-    let message = err instanceof Error ? err.message : String(err);
-    const errName = err instanceof Error ? err.name : "";
-    if (
-      errName === "AbortError" ||
-      message.toLowerCase().includes("aborted") ||
-      message.toLowerCase().includes("the operation was aborted")
-    ) {
-      timedOut = true;
-      message = `task timed out after ${Math.round(timeoutMs / 1000)}s`;
-      const cwd = parseCwd(task.agent.tools);
-      const stashRef = await safeStashOnTimeout(task.id, task.runId, cwd);
-      if (stashRef) {
-        message += ` (working tree captured to git stash: ${stashRef})`;
-      }
-    }
-
-    await writeLog(task.id, task.runId, "error", message).catch(() => undefined);
-    await prisma.task.update({
-      where: { id: task.id },
-      data: {
-        status: timedOut ? "timeout" : "failed",
-        finishedAt: new Date(),
-        error: message,
-      },
-    }).catch(() => undefined);
-    emitRunEvent(task.runId, {
-      kind: "task-status",
-      taskId: task.id,
-      status: timedOut ? "timeout" : "failed",
-      stepOrder: task.stepOrder,
-    });
-    await failRun(task.runId, `step ${task.stepOrder} ${timedOut ? "timed out" : "failed"}: ${message}`).catch(() => undefined);
+    return;
   }
+
+  // Failure path
+  const err = lastErr;
+  let message = err instanceof Error ? err.message : String(err);
+  const errName = err instanceof Error ? err.name : "";
+  if (
+    errName === "AbortError" ||
+    message.toLowerCase().includes("aborted") ||
+    message.toLowerCase().includes("the operation was aborted")
+  ) {
+    timedOut = true;
+    message = `task timed out after ${Math.round(timeoutMs / 1000)}s`;
+    const cwd = parseCwd(task.agent.tools);
+    const stashRef = await safeStashOnTimeout(task.id, task.runId, cwd);
+    if (stashRef) {
+      message += ` (working tree captured to git stash: ${stashRef})`;
+    }
+  }
+  if (attemptModels.length > 1) {
+    message = `${message} (after trying: ${attemptModels.join(" → ")})`;
+  }
+
+  await writeLog(task.id, task.runId, "error", message).catch(() => undefined);
+  await prisma.task.update({
+    where: { id: task.id },
+    data: {
+      status: timedOut ? "timeout" : "failed",
+      finishedAt: new Date(),
+      error: message,
+    },
+  }).catch(() => undefined);
+  emitRunEvent(task.runId, {
+    kind: "task-status",
+    taskId: task.id,
+    status: timedOut ? "timeout" : "failed",
+    stepOrder: task.stepOrder,
+  });
+  await failRun(task.runId, `step ${task.stepOrder} ${timedOut ? "timed out" : "failed"}: ${message}`).catch(() => undefined);
 }
 
 /** Try to claim and START (fire-and-forget) one queued task. Returns

@@ -54,11 +54,13 @@ export function buildHelp(): string {
     "Kontrol komutları (her zaman çalışır, worker meşgul olsa bile):",
     "/ping — panel hayatta mı?",
     "/agents — kayıtlı agent listesi",
-    "/auto on|off — auto-merge toggle (Day 4)",
+    "/auto on|off — auto-merge toggle",
     "/cap [status|set <usd>] — günlük maliyet limiti",
     "/kill [<task-id>] — çalışan task'ı durdur",
     "/deploy [status|retry] — Vercel deploy bilgisi",
     "/revert <pr-number> — merge edilmiş PR için revert linki",
+    "/undo [confirm] — son agent commit'ini develop'tan revert eder",
+    "/backup [status|now] — B2'deki backup durumu / manuel backup",
     "/sync — Mac'in develop branch'ini GitHub'tan günceller",
     "/help — bu listeyi göster",
   ].join("\n");
@@ -74,6 +76,8 @@ export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set([
   "deploy",
   "revert",
   "agents",
+  "undo",
+  "backup",
 ]);
 
 // Patterns that strongly suggest the user is asking the agent to do

@@ -5,9 +5,11 @@ export async function register() {
   const { startTelegramPoller } = await import("./lib/telegram-poller");
   const { startHeartbeat } = await import("./lib/heartbeat");
   const { startAutoMerge } = await import("./lib/auto-merge");
+  const { startBackupSchedule } = await import("./lib/backup");
   startWorker();
   await startScheduler();
   startTelegramPoller();
   startHeartbeat();
   startAutoMerge();
+  startBackupSchedule();
 }

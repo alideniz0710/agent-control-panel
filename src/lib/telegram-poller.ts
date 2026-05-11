@@ -31,6 +31,8 @@ import {
   handleDeploy,
   handleRevert,
   handleAgents,
+  handleUndo,
+  handleBackup,
 } from "./control-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
@@ -73,11 +75,20 @@ function rememberProcessed(updateId: number): void {
   processedMessageIds.add(updateId);
 }
 
+interface TelegramVoice {
+  file_id: string;
+  file_unique_id?: string;
+  duration: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
     message_id: number;
     text?: string;
+    voice?: TelegramVoice;
     chat: { id: number | string };
     from?: { id: number | string; first_name?: string };
   };
@@ -136,6 +147,35 @@ async function sendTelegram(chatId: number | string, text: string): Promise<void
 // DB (seeded via curl or by the panel boot helper).
 const ORCHESTRATOR_WORKFLOW = "tg-orchestrator";
 
+async function handleVoiceMessage(chatId: number | string, voice: TelegramVoice): Promise<void> {
+  if (!process.env.OPENAI_API_KEY) {
+    await sendTelegram(
+      chatId,
+      "Sesli mesaj geldi ama Whisper config'i yok. ~/.zshrc'ye OPENAI_API_KEY ekle, pm2 restart.",
+    );
+    return;
+  }
+  await sendTelegram(chatId, `🎤 ${voice.duration}s ses çözümleniyor...`);
+  let transcript: string | null;
+  try {
+    const { transcribeVoice } = await import("./voice");
+    transcript = await transcribeVoice(voice);
+  } catch (e) {
+    await sendTelegram(
+      chatId,
+      `❌ Whisper hatası: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return;
+  }
+  if (!transcript) {
+    await sendTelegram(chatId, "Whisper boş cevap döndü — sesli mesaj kayıpsız mı?");
+    return;
+  }
+  // Mirror back what we heard, then dispatch.
+  await sendTelegram(chatId, `📝 Anladım: "${transcript}"\n\nOrchestrator'a yönlendiriyorum...`);
+  await dispatchToOrchestrator(chatId, transcript);
+}
+
 async function dispatchToOrchestrator(chatId: number | string, text: string): Promise<void> {
   const workflow = await prisma.workflow.findFirst({
     where: { name: ORCHESTRATOR_WORKFLOW, enabled: true },
@@ -165,14 +205,21 @@ async function dispatchToOrchestrator(chatId: number | string, text: string): Pr
 }
 
 async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promise<void> {
-  if (!msg.text) return;
-
   // Single-user mode: only respond to the configured chat.
   const expectedChatId = process.env.TELEGRAM_CHAT_ID;
   if (expectedChatId && String(msg.chat.id) !== String(expectedChatId)) {
     console.log(`[telegram-poller] ignoring message from chat ${msg.chat.id} (expected ${expectedChatId})`);
     return;
   }
+
+  // Day 1.4: voice message → Whisper → orchestrator. Same routing as
+  // plain text but with a transcription step in front.
+  if (msg.voice) {
+    await handleVoiceMessage(msg.chat.id, msg.voice);
+    return;
+  }
+
+  if (!msg.text) return;
 
   const parsed = parseCommand(msg.text);
   if (!parsed) {
@@ -226,6 +273,12 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
         return;
       case "agents":
         await handleAgents(msg.chat.id, sendTelegram);
+        return;
+      case "undo":
+        await handleUndo(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "backup":
+        await handleBackup(msg.chat.id, parsed.args, sendTelegram);
         return;
     }
   }
