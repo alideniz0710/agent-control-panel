@@ -7,6 +7,9 @@
 //
 // Allowed (no token needed):
 //   - /api/webhook            handles its own auth (Bearer WEBHOOK_SECRET)
+//   - /api/hooks/*            provider-specific HMAC signature verify
+//                              (GitHub, Vercel, Sentry); each handler
+//                              rejects unsigned/forged requests
 //   - /api/health             liveness probe; only exposes counts/flags
 //                              (no secrets), needs to be hittable by
 //                              external uptime monitors
@@ -26,7 +29,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATH_PREFIXES = ["/api/webhook", "/api/health"];
+const PUBLIC_PATH_PREFIXES = ["/api/webhook", "/api/hooks", "/api/health"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATH_PREFIXES.some(
