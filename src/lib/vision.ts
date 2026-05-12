@@ -16,7 +16,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-const CLAUDE_VISION_MODEL = "claude-3-5-sonnet-20241022";
+const CLAUDE_VISION_MODEL = "claude-sonnet-4-6";
 
 type SupportedMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
