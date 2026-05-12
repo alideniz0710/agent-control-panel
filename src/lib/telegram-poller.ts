@@ -83,12 +83,22 @@ interface TelegramVoice {
   file_size?: number;
 }
 
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id?: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
     message_id: number;
     text?: string;
+    caption?: string;
     voice?: TelegramVoice;
+    photo?: TelegramPhotoSize[];
     chat: { id: number | string };
     from?: { id: number | string; first_name?: string };
   };
@@ -176,6 +186,40 @@ async function handleVoiceMessage(chatId: number | string, voice: TelegramVoice)
   await dispatchToOrchestrator(chatId, transcript);
 }
 
+async function handlePhotoMessage(
+  chatId: number | string,
+  photos: TelegramPhotoSize[],
+  caption?: string,
+): Promise<void> {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    await sendTelegram(
+      chatId,
+      "Fotoğraf geldi ama Vision config'i yok. ~/.zshrc'ye ANTHROPIC_API_KEY ekle, pm2 restart.",
+    );
+    return;
+  }
+  await sendTelegram(chatId, "🖼️ Görüntü analiz ediliyor...");
+  // Telegram sends multiple resolutions; last element is the largest.
+  const best = photos[photos.length - 1];
+  let description: string;
+  try {
+    const { downloadTelegramPhoto, analyzeWithClaude } = await import("./vision");
+    const { buffer } = await downloadTelegramPhoto(best.file_id);
+    description = await analyzeWithClaude(buffer, caption);
+  } catch (e) {
+    await sendTelegram(
+      chatId,
+      `❌ görüntü analiz edilemedi: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return;
+  }
+  const combinedText = caption
+    ? `[photo: ${description}] ${caption}`
+    : `[photo: ${description}]`;
+  await sendTelegram(chatId, `📸 Anladım: "${combinedText}"\n\nOrchestrator'a yönlendiriyorum...`);
+  await dispatchToOrchestrator(chatId, combinedText);
+}
+
 async function dispatchToOrchestrator(chatId: number | string, text: string): Promise<void> {
   const workflow = await prisma.workflow.findFirst({
     where: { name: ORCHESTRATOR_WORKFLOW, enabled: true },
@@ -216,6 +260,11 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
   // plain text but with a transcription step in front.
   if (msg.voice) {
     await handleVoiceMessage(msg.chat.id, msg.voice);
+    return;
+  }
+
+  if (msg.photo && msg.photo.length > 0) {
+    await handlePhotoMessage(msg.chat.id, msg.photo, msg.caption);
     return;
   }
 
