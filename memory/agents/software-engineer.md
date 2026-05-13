@@ -81,3 +81,6 @@ If a task NEEDS more explanation (architectural choice with tradeoffs), ask the 
 
 - 2026-05-13: `app/api/bill/[token]/select-mode/route.ts` + Prisma ItemSelection table (Sprint 2.2 backend, frontend pending)
 - 2026-05-13: `lib/supabase.ts` is single source for both clients; old `lib/supabase-anon.ts` consolidated
+
+
+<!-- auto-write entries below -->

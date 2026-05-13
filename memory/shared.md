@@ -98,3 +98,6 @@ Agent wrote `claude-3-5-sonnet-20241022` in `vision.ts`. That model is retired. 
 Backblaze B2 `b2_authorize_account` v3 returns `apiInfo.storageApi.{apiUrl, bucketId, bucketName}` — NOT v2's `apiUrl` + `allowed.bucketId`. Mixing the two shapes silently broke backup uploads.
 
 **Takeaway:** When using a new API, copy the exact response example from current docs into the type definition.
+
+
+<!-- auto-write entries below -->

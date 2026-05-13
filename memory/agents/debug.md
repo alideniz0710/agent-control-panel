@@ -60,3 +60,6 @@ Look at PM2 logs first: `pm2 logs agent-control-panel --lines 100 --nostream`
 ## Response style
 
 Same as software-engineer: max 5 Turkish lines for the main answer. Detail only on follow-up question.
+
+
+<!-- auto-write entries below -->
