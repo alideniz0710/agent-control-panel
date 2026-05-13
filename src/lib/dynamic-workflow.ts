@@ -95,6 +95,41 @@ const AGENT_TASK_GUARDRAILS: Record<string, string> = {
     "- Mesajı doğrudan Telegram'a yapıştırılabilir formatta tut.",
 };
 
+// Model auto-selection based on size tag in task text.
+// Convention: orchestrator-router agents (and the founder via /se prompt)
+// include a size tag like "[S]" or "[M]" or "[L]" in the task / PR
+// title. We detect that tag and route to a cost-appropriate model:
+//   [XS] / [S]  → Haiku (cheapest, ~$1 input / $5 output per Mtok)
+//   [M]         → Sonnet (default, ~$3 / $15)
+//   [L]         → Opus (heavy lifting, ~$15 / $75)
+// If no tag is found, we DON'T override — the agent's configured
+// model stands. This is conservative: an explicit step.model from
+// the orchestrator always wins.
+const SIZE_TAG_RE = /\[(XS|S|M|L)\]/i;
+
+function modelForSizeTag(tag: string): string | null {
+  switch (tag.toUpperCase()) {
+    case "XS":
+    case "S":
+      return "claude-haiku-4-5-20251001";
+    case "M":
+      return null; // keep agent's default (Sonnet)
+    case "L":
+      return "claude-opus-4-7";
+    default:
+      return null;
+  }
+}
+
+/** Detect a size tag in the task text and pick a cheaper/heavier model
+ *  for the step. Returns null when no override should be applied
+ *  (no tag, or [M] which means "use default"). */
+export function pickModelFromSizeTag(taskText: string): string | null {
+  const m = taskText.match(SIZE_TAG_RE);
+  if (!m) return null;
+  return modelForSizeTag(m[1]);
+}
+
 /** Append agent-specific response-style + PR-format guardrails to a
  *  task string. Idempotent. Used by buildAndRun (orchestrator path)
  *  and telegram-poller (direct /se /debug /pa path). */
@@ -193,16 +228,23 @@ export async function buildAndRun(
       steps: {
         // Each step's input is prepared (memory + guardrails) async, so we
         // resolve all of them in parallel before passing to Prisma's create.
+        // model resolution priority:
+        //   1. explicit step.model from the orchestrator's plan
+        //   2. size-tag auto-selection (XS/S → Haiku, L → Opus)
+        //   3. null → agent's default model (Sonnet)
         create: await Promise.all(
-          plan.steps.map(async (s, i) => ({
-            order: i,
-            agentId: byName.get(s.agentName)!.id,
-            inputTemplate: await prepareTaskInput(s.agentName, s.task),
-            requiresApproval: s.requiresApproval ?? false,
-            model: s.model ?? null,
-            condition: s.condition ?? null,
-            parallelGroupId: s.parallelGroupId ?? null,
-          })),
+          plan.steps.map(async (s, i) => {
+            const autoModel = s.model ? null : pickModelFromSizeTag(s.task);
+            return {
+              order: i,
+              agentId: byName.get(s.agentName)!.id,
+              inputTemplate: await prepareTaskInput(s.agentName, s.task),
+              requiresApproval: s.requiresApproval ?? false,
+              model: s.model ?? autoModel,
+              condition: s.condition ?? null,
+              parallelGroupId: s.parallelGroupId ?? null,
+            };
+          }),
         ),
       },
     },

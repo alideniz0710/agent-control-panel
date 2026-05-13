@@ -20,11 +20,29 @@ export const anthropicApiExecutor: Executor = async ({
 
   onLog({ level: "info", text: `calling ${model}` });
 
+  // Prompt caching — Anthropic ephemeral cache marks the system prompt
+  // as a stable prefix that subsequent calls (within 5 min, same prefix)
+  // can reuse. Input tokens on the cached portion charge at 10% of the
+  // normal rate. Worth it for orchestrator-router etc. that get called
+  // many times back-to-back with a static system prompt.
+  // Threshold: caching only activates if the cached content is >1024
+  // tokens (Sonnet) or >2048 (Haiku); below that, marking has no effect
+  // but doesn't hurt either.
+  const systemBlocks = systemPrompt
+    ? [
+        {
+          type: "text" as const,
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" as const },
+        },
+      ]
+    : undefined;
+
   const stream = await getClient().messages.stream(
     {
       model,
       max_tokens: 4096,
-      system: systemPrompt ?? undefined,
+      system: systemBlocks,
       messages: [{ role: "user", content: userInput }],
     },
     signal ? { signal } : undefined,
