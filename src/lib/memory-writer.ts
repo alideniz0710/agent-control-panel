@@ -30,8 +30,8 @@ const MEMORY_DIR = path.resolve(process.cwd(), "memory");
 const MAX_MEMORY_KB = 80; // cap per agent file before old-entry pruning kicks in
 const MAX_TASK_CONTENT_CHARS = 8000; // truncate input/output before sending to synthesizer
 
-const SYNTHESIZER_SYSTEM_PROMPT = `Sen bir agent'ın "ne öğrendi" özet yazarısın.
-Bir agent görevi tamamladı (input + output verilecek). Senin işin:
+const SYNTHESIZER_SYSTEM_PROMPT_SUCCESS = `Sen bir agent'ın "ne öğrendi" özet yazarısın.
+Bir agent görevi BAŞARIYLA tamamladı (input + output verilecek). Senin işin:
 
 Bu görevden ÖNEMLİ, KALICI, TEKRAR İŞE YARAYACAK öğrenmeler çıkar. Örnek:
 - "Splitbill'de /admin/tables route'u App Router'da, Pages Router değil" ← evet, kalıcı
@@ -52,10 +52,43 @@ Format:
 
 VEYA tek kelime: SKIP`;
 
+const SYNTHESIZER_SYSTEM_PROMPT_FAILURE = `Sen bir agent'ın "ne hata yaptım, bir daha yapma" özet yazarısın.
+Bir agent görevi BAŞARISIZ tamamladı (input + error verilecek). Senin işin:
+
+Bu hatadan KALICI, TEKRAR ETMEMEK İÇİN AGENT'A HATIRLATILACAK dersler çıkar.
+
+ÖZELLİKLE ÖNEMLİ (mutlaka kaydet):
+- "X modeli artık yok, Y kullan" tarzı model adı hataları
+- "X env var eksik, kontrol etmeden başlama" tarzı env var hataları
+- "X dosyası deny-list'te, PR açma" tarzı policy hataları
+- "X kütüphanesinin Y metodu yok, Z kullan" tarzı API hataları
+- "Schema'da X yok, önce Z migration gerek" tarzı veri hataları
+
+ATLA:
+- Geçici network/timeout hataları
+- Founder'ın yazım hatasından gelen hatalar
+- "Bilemedim/Anlamadım" tarzı belirsiz ifadeler
+
+KURALLAR:
+1. Kayda değer öğrenme yoksa tek kelime: SKIP
+2. Aksi halde 1-3 madde, her biri "❌ HATA: ..." veya "✅ DOĞRU: ..." formatında, tek satır Türkçe
+3. Spesifik ol — "buton hatası" değil, "next.config.js'te output: 'export' kullanma, App Router ile uyumsuz"
+4. Direkt maddeler, başlık YOK
+
+Format:
+- ❌ HATA: <ne yaptın>  ✅ DOĞRU: <ne yapmalıydın>
+- ❌ HATA: <başka şey>  ✅ DOĞRU: <doğrusu>
+
+VEYA tek kelime: SKIP`;
+
 interface SynthesizeArgs {
   agentName: string;
   taskInput: string;
   taskOutput: string;
+  /** When true, the synthesizer is asked to extract "don't repeat this mistake"
+   *  learnings instead of "what worked" learnings. taskOutput then contains
+   *  the error message (prefixed with "[FAILURE]" by the caller). */
+  failed?: boolean;
 }
 
 function truncateForLLM(s: string, maxChars: number): string {
@@ -71,16 +104,21 @@ async function synthesizeLearning(args: SynthesizeArgs): Promise<string | null> 
   if (!apiKey) return null;
 
   const client = new Anthropic();
+  const outputLabel = args.failed ? "Task error (what went wrong)" : "Task output (what the agent produced)";
   const userMsg =
     `# Agent\n${args.agentName}\n\n` +
     `# Task input (what the agent was asked to do)\n${truncateForLLM(args.taskInput, MAX_TASK_CONTENT_CHARS)}\n\n` +
-    `# Task output (what the agent produced)\n${truncateForLLM(args.taskOutput, MAX_TASK_CONTENT_CHARS)}`;
+    `# ${outputLabel}\n${truncateForLLM(args.taskOutput, MAX_TASK_CONTENT_CHARS)}`;
+
+  const systemPrompt = args.failed
+    ? SYNTHESIZER_SYSTEM_PROMPT_FAILURE
+    : SYNTHESIZER_SYSTEM_PROMPT_SUCCESS;
 
   try {
     const res = await client.messages.create({
       model: SYNTHESIZER_MODEL,
       max_tokens: 300,
-      system: SYNTHESIZER_SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: [{ role: "user", content: userMsg }],
     });
     const block = res.content.find((b) => b.type === "text");
@@ -158,7 +196,12 @@ export async function autoWriteMemory(args: SynthesizeArgs): Promise<void> {
     await ensureMarker(filePath);
 
     const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    const block = `\n\n## ${ts}\n${learning}\n`;
+    // Tag failure-derived entries so they're visually distinct when
+    // reviewing the memory file later. Both kinds are equally important
+    // but failures often warrant a slightly different scan when
+    // debugging "why does the agent keep doing this".
+    const tag = args.failed ? " (failure)" : "";
+    const block = `\n\n## ${ts}${tag}\n${learning}\n`;
     await fs.appendFile(filePath, block);
 
     await pruneIfTooLarge(filePath);

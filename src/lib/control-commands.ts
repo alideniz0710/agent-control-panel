@@ -552,6 +552,72 @@ export async function handleAgents(chatId: number | string, send: SendFn): Promi
   await send(chatId, `Agents (${agents.length}):\n\n` + lines.join("\n"));
 }
 
+// ── /cost ──────────────────────────────────────────────────────────────
+//
+// Per-agent + total cost breakdown for the last N hours (default 24).
+// Helps founder see which agent is burning money so they can adjust:
+//   - the daily /cap value
+//   - which agent gets which kinds of tasks
+//   - whether memory writes are helping (compare before/after Korea)
+//
+// Reads from prisma.task — relies on cost being persisted per task by
+// the worker. We aggregate locally; cheap.
+
+export async function handleCost(chatId: number | string, args: string, send: SendFn): Promise<void> {
+  const hoursArg = parseInt(args.trim(), 10);
+  const hours = isNaN(hoursArg) || hoursArg <= 0 ? 24 : Math.min(hoursArg, 24 * 30);
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const tasks = await prisma.task.findMany({
+    where: { startedAt: { gte: since } },
+    select: { cost: true, status: true, tokensIn: true, tokensOut: true, agent: { select: { name: true } } },
+  });
+  if (tasks.length === 0) {
+    await send(chatId, `Son ${hours} saatte hiç görev çalışmamış.`);
+    return;
+  }
+
+  type AgentSummary = { name: string; cost: number; count: number; failed: number; tokensIn: number; tokensOut: number };
+  const byAgent = new Map<string, AgentSummary>();
+  let total = 0;
+  let totalFailed = 0;
+  for (const t of tasks) {
+    const name = t.agent?.name ?? "(unknown)";
+    const existing = byAgent.get(name) ?? { name, cost: 0, count: 0, failed: 0, tokensIn: 0, tokensOut: 0 };
+    existing.cost += t.cost ?? 0;
+    existing.count += 1;
+    existing.tokensIn += t.tokensIn ?? 0;
+    existing.tokensOut += t.tokensOut ?? 0;
+    if (t.status === "failed" || t.status === "timeout") existing.failed += 1;
+    byAgent.set(name, existing);
+    total += t.cost ?? 0;
+    if (t.status === "failed" || t.status === "timeout") totalFailed += 1;
+  }
+
+  const sorted = Array.from(byAgent.values()).sort((a, b) => b.cost - a.cost);
+  const lines = [
+    `📊 Son ${hours} saat cost dağılımı`,
+    "",
+    `Toplam: $${total.toFixed(3)} (${tasks.length} görev, ${totalFailed} fail)`,
+    "",
+    "Agent başına:",
+  ];
+  for (const a of sorted) {
+    const failTag = a.failed > 0 ? ` (${a.failed} fail!)` : "";
+    lines.push(
+      `  ${a.name.padEnd(28)} $${a.cost.toFixed(3).padStart(7)}  ${a.count} task${a.count > 1 ? "s" : ""}${failTag}`,
+    );
+  }
+  // Cost-saving hint: if failure rate > 25%, surface it
+  if (tasks.length >= 4 && totalFailed / tasks.length > 0.25) {
+    lines.push("");
+    lines.push(
+      `⚠️ Failure oranı %${Math.round((totalFailed / tasks.length) * 100)} — agent'lar tekrar tekrar fail ediyor. memory/agents/<name>.md dosyalarına bak, son fail kayıtları orada birikiyor.`,
+    );
+  }
+  await send(chatId, lines.join("\n"));
+}
+
 // ── /memo ──────────────────────────────────────────────────────────────
 //
 // Adds an entry to the agent memory system, either to shared.md or to a
