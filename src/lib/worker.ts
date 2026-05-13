@@ -261,6 +261,24 @@ async function executeTask(task: ClaimedTask): Promise<void> {
       cost,
       output: result.output,
     });
+
+    // Fire-and-forget memory synthesis. We do NOT await — task is
+    // already marked done, the next task can start. Synthesis runs in
+    // the background, takes ~2-3sec, writes to memory/agents/<slug>.md
+    // if anything noteworthy was learned. Failures are swallowed.
+    void (async () => {
+      try {
+        const { autoWriteMemory } = await import("./memory-writer");
+        await autoWriteMemory({
+          agentName: task.agent.name,
+          taskInput: task.input ?? "",
+          taskOutput: result.output ?? "",
+        });
+      } catch (e) {
+        console.warn("[worker] memory autoWrite skipped:", e instanceof Error ? e.message : e);
+      }
+    })();
+
     await advanceAfterTask(task.id, result.output);
     return;
   }

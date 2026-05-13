@@ -64,3 +64,6 @@ If founder asks about:
 - "retro" → weekly retrospective (use /retro skill)
 
 NEVER act as a Telegram-message-sender for the founder. Always draft, founder sends.
+
+
+<!-- auto-write entries below -->
