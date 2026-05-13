@@ -16,6 +16,7 @@ import { prisma } from "./prisma";
 import { startRun } from "./workflow";
 import {
   parseCommand,
+  COMMAND_TO_AGENT,
   findRoute,
   buildHelp,
   checkDangerous,
@@ -389,11 +390,20 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
   // input/output as "previous exchange" so the agent sees what we
   // were just talking about. Without this, every /se call is a fresh
   // session with no memory of "the plan we just made".
-  const augmentedInput = await augmentWithPriorContext(
+  const priorContextInput = await augmentWithPriorContext(
     String(msg.chat.id),
     parsed.command,
     parsed.args,
   );
+
+  // Apply per-agent guardrails (response style + PR title format etc)
+  // so /se /debug /pa direct routes get the same enforcement that the
+  // orchestrator path already gets via dynamic-workflow.buildAndRun.
+  const targetAgent = COMMAND_TO_AGENT[parsed.command];
+  const { applyGuardrails } = await import("./dynamic-workflow");
+  const augmentedInput = targetAgent
+    ? applyGuardrails(targetAgent, priorContextInput)
+    : priorContextInput;
 
   await sendTelegram(msg.chat.id, `⏳ /${parsed.command}: ${route.description} çalışıyor...`);
 

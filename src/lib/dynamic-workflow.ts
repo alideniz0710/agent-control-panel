@@ -58,6 +58,54 @@ export interface DynamicRunHandle {
   workflowId: string;
 }
 
+// Agent-specific guardrails appended to every task the orchestrator
+// hands off via buildAndRun. Centralizes "always do this" rules so
+// individual orchestrator-router decisions don't have to remember
+// them. Empirically the founder reports:
+//   - Agents giving long technical responses (founder isn't a dev)
+//   - Agents forgetting [S]/[no-test] in PR titles → auto-merge skips
+//   - Agents not writing test steps in PR descriptions
+// Suffix is appended after the orchestrator's task text; it's idempotent
+// (re-appending doesn't break anything) and only fires for agent names
+// we explicitly target.
+const AGENT_TASK_GUARDRAILS: Record<string, string> = {
+  "cc:software-engineer":
+    "\n\n---\n\n**Cevap kuralları (zorunlu):**\n" +
+    "- Türkçe yaz, maksimum 5 satır özet. Detay sadece kullanıcı tekrar sorarsa.\n" +
+    "- PR açıyorsan title formatı: `[S] kısa açıklama [no-test]`\n" +
+    "  - Test eklediysen [no-test] yazma\n" +
+    "  - Boyut bilmiyorsan [S] kullan\n" +
+    "- PR description'a şu başlık zorunlu:\n" +
+    "  ```\n" +
+    "  ## Telefon test adımları\n" +
+    "  1. <Vercel preview URL>\n" +
+    "  2. <ne tıkla / ne gir>\n" +
+    "  3. <beklenen sonuç>\n" +
+    "  ```\n" +
+    "- middleware, .env, package.json, migration dosyalarına dokunma — auto-merge deny-list.",
+  "cc:debug":
+    "\n\n---\n\n**Cevap kuralları (zorunlu):**\n" +
+    "- Türkçe yaz, maksimum 5 satır özet.\n" +
+    "- Root cause + tek paragraf fix tarifi yeter.\n" +
+    "- PR açıyorsan title formatı: `[S] fix: kısa [no-test]` (test eklediysen [no-test] yazma).",
+  "cc:personal-assistant":
+    "\n\n---\n\n**Cevap kuralları (zorunlu):**\n" +
+    "- Türkçe yaz, maksimum 200 satır markdown.\n" +
+    "- Kod yazma; plain text + markdown listeleri/tablolar yeter.\n" +
+    "- Mesajı doğrudan Telegram'a yapıştırılabilir formatta tut.",
+};
+
+/** Append agent-specific response-style + PR-format guardrails to a
+ *  task string. Idempotent. Used by buildAndRun (orchestrator path)
+ *  and telegram-poller (direct /se /debug /pa path). */
+export function applyGuardrails(agentName: string, task: string): string {
+  const suffix = AGENT_TASK_GUARDRAILS[agentName];
+  if (!suffix) return task;
+  // Idempotent — don't double-append if orchestrator already merged it in
+  if (task.includes("**Cevap kuralları (zorunlu):**")) return task;
+  return task + suffix;
+}
+
 /** Validates a dynamic plan and throws descriptive errors. */
 export function validatePlan(plan: unknown): DynamicPlan {
   if (!plan || typeof plan !== "object") {
@@ -132,7 +180,7 @@ export async function buildAndRun(
         create: plan.steps.map((s, i) => ({
           order: i,
           agentId: byName.get(s.agentName)!.id,
-          inputTemplate: s.task,
+          inputTemplate: applyGuardrails(s.agentName, s.task),
           requiresApproval: s.requiresApproval ?? false,
           model: s.model ?? null,
           condition: s.condition ?? null,

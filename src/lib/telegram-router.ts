@@ -18,6 +18,16 @@ export const TELEGRAM_COMMAND_ROUTES: CommandRoute[] = [
   { command: "pa", workflowName: "tg-cmd-pa", description: "cc:personal-assistant" },
 ];
 
+// Maps direct-route commands to the underlying agent name. Used by the
+// poller to apply agent-specific response-style guardrails before
+// dispatching, so /se /debug /pa get the same enforcement as plain-text
+// orchestrator dispatches.
+export const COMMAND_TO_AGENT: Record<string, string> = {
+  se: "cc:software-engineer",
+  debug: "cc:debug",
+  pa: "cc:personal-assistant",
+};
+
 export function parseCommand(text: string): { command: string; args: string } | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
