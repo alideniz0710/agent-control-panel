@@ -118,7 +118,17 @@ async function synthesizeLearning(args: SynthesizeArgs): Promise<string | null> 
     const res = await client.messages.create({
       model: SYNTHESIZER_MODEL,
       max_tokens: 300,
-      system: systemPrompt,
+      // System prompt is identical across all synthesis calls (one for
+      // success, one for failure). Mark it as cache_control: ephemeral
+      // so consecutive synthesizer calls within 5 min share the
+      // cached prefix and charge 10% on those tokens.
+      system: [
+        {
+          type: "text" as const,
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" as const },
+        },
+      ],
       messages: [{ role: "user", content: userMsg }],
     });
     const block = res.content.find((b) => b.type === "text");

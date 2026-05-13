@@ -57,6 +57,12 @@ type PollerGlobal = {
   pollerStopped?: boolean;
   pollerLastUpdateId?: number;
   pollerProcessedIds?: Set<number>;
+  /** Duplicate-detection cache: hash(command + args) → { runId, ts }.
+   *  Short-circuits identical /se /debug /pa commands sent within
+   *  DUPLICATE_TTL_MS (accidental retry, double-click on slow phone
+   *  keyboard etc.). On hit, we tell the founder which run is already
+   *  going and skip creating a new one. */
+  pollerDuplicateCache?: Map<string, { runId: string; ts: number }>;
 };
 const globalForPoller = globalThis as unknown as PollerGlobal;
 
@@ -64,6 +70,43 @@ let polling = false;
 const processedMessageIds =
   globalForPoller.pollerProcessedIds ?? new Set<number>();
 globalForPoller.pollerProcessedIds = processedMessageIds;
+
+const DUPLICATE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DUPLICATE_CACHE_MAX = 100;
+const duplicateCache =
+  globalForPoller.pollerDuplicateCache ?? new Map<string, { runId: string; ts: number }>();
+globalForPoller.pollerDuplicateCache = duplicateCache;
+
+function hashCommand(command: string, args: string): string {
+  // Lightweight stable hash: lowercase + whitespace-collapsed payload.
+  // Not cryptographic — just enough to detect "literally the same prompt".
+  const normalized = (command + "|" + args).toLowerCase().replace(/\s+/g, " ").trim();
+  return normalized;
+}
+
+function checkDuplicate(command: string, args: string): { runId: string } | null {
+  const key = hashCommand(command, args);
+  const hit = duplicateCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.ts > DUPLICATE_TTL_MS) {
+    duplicateCache.delete(key);
+    return null;
+  }
+  return { runId: hit.runId };
+}
+
+function rememberDuplicate(command: string, args: string, runId: string): void {
+  if (duplicateCache.size >= DUPLICATE_CACHE_MAX) {
+    // FIFO eviction — drop oldest ~half
+    const drop = Math.floor(DUPLICATE_CACHE_MAX / 2);
+    let i = 0;
+    for (const k of duplicateCache.keys()) {
+      if (i++ >= drop) break;
+      duplicateCache.delete(k);
+    }
+  }
+  duplicateCache.set(hashCommand(command, args), { runId, ts: Date.now() });
+}
 
 function rememberProcessed(updateId: number): void {
   if (processedMessageIds.size >= PROCESSED_MSGS_MAX) {
@@ -370,6 +413,24 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     return;
   }
 
+  // Duplicate-detection: did we just dispatch this exact (command,args)
+  // in the last DUPLICATE_TTL_MS? If so, the original run is likely
+  // still in flight or just finished; founder probably double-tapped
+  // or re-sent the same prompt by accident. Skip the new dispatch
+  // (each /se /debug /pa call costs $0.05-0.20 — accidental retries
+  // add up to real money).
+  const dup = checkDuplicate(parsed.command, parsed.args);
+  if (dup) {
+    await sendTelegram(
+      msg.chat.id,
+      `⏭️ Az önce aynı /${parsed.command} görevini gönderdin (5 dk içinde).\n` +
+        `Önceki run: ${dup.runId.slice(0, 8)}…\n\n` +
+        `Eğer GERÇEKTEN yeniden çalışsın istiyorsan komutun sonuna küçük bir değişiklik ekle ` +
+        `(örn boşluk, nokta, "tekrar dene"). Aksi halde token boşa harcamamak için iptal ettim.`,
+    );
+    return;
+  }
+
   // Refuse obviously destructive prompts unless explicit confirmation.
   const danger = checkDangerous(parsed.args);
   if (danger.isDangerous && !danger.hasConfirm) {
@@ -420,6 +481,7 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
       chatId: String(msg.chat.id),
       telegramCommand: parsed.command,
     });
+    rememberDuplicate(parsed.command, parsed.args, runId);
     console.log(`[telegram-poller] /${parsed.command} → run ${runId}`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
