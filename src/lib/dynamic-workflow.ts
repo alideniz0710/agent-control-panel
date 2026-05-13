@@ -106,6 +106,20 @@ export function applyGuardrails(agentName: string, task: string): string {
   return task + suffix;
 }
 
+/** Combined task preparation: prepend memory context (from memory/
+ *  filesystem) AND append response-style guardrails. The two are
+ *  orthogonal — guardrails govern OUTPUT behavior, memory provides
+ *  INPUT context. Both prepended at task creation time, so updates to
+ *  memory.md files take effect on the NEXT dispatched task. */
+export async function prepareTaskInput(agentName: string, task: string): Promise<string> {
+  // Local import to avoid a circular dep when memory.ts grows to need
+  // anything from this file later.
+  const { buildMemoryContext } = await import("./memory");
+  const withGuardrails = applyGuardrails(agentName, task);
+  const memoryPrefix = await buildMemoryContext(agentName);
+  return memoryPrefix + withGuardrails;
+}
+
 /** Validates a dynamic plan and throws descriptive errors. */
 export function validatePlan(plan: unknown): DynamicPlan {
   if (!plan || typeof plan !== "object") {
@@ -177,15 +191,19 @@ export async function buildAndRun(
       enabled: true,
       schedule: null,
       steps: {
-        create: plan.steps.map((s, i) => ({
-          order: i,
-          agentId: byName.get(s.agentName)!.id,
-          inputTemplate: applyGuardrails(s.agentName, s.task),
-          requiresApproval: s.requiresApproval ?? false,
-          model: s.model ?? null,
-          condition: s.condition ?? null,
-          parallelGroupId: s.parallelGroupId ?? null,
-        })),
+        // Each step's input is prepared (memory + guardrails) async, so we
+        // resolve all of them in parallel before passing to Prisma's create.
+        create: await Promise.all(
+          plan.steps.map(async (s, i) => ({
+            order: i,
+            agentId: byName.get(s.agentName)!.id,
+            inputTemplate: await prepareTaskInput(s.agentName, s.task),
+            requiresApproval: s.requiresApproval ?? false,
+            model: s.model ?? null,
+            condition: s.condition ?? null,
+            parallelGroupId: s.parallelGroupId ?? null,
+          })),
+        ),
       },
     },
   });

@@ -34,6 +34,7 @@ import {
   handleAgents,
   handleUndo,
   handleBackup,
+  handleMemo,
 } from "./control-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
@@ -330,6 +331,9 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
       case "backup":
         await handleBackup(msg.chat.id, parsed.args, sendTelegram);
         return;
+      case "memo":
+        await handleMemo(msg.chat.id, parsed.args, sendTelegram);
+        return;
     }
   }
 
@@ -396,13 +400,13 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
     parsed.args,
   );
 
-  // Apply per-agent guardrails (response style + PR title format etc)
-  // so /se /debug /pa direct routes get the same enforcement that the
-  // orchestrator path already gets via dynamic-workflow.buildAndRun.
+  // Apply per-agent memory context + guardrails so /se /debug /pa
+  // direct routes get the same prep that the orchestrator path gets
+  // via dynamic-workflow.buildAndRun.
   const targetAgent = COMMAND_TO_AGENT[parsed.command];
-  const { applyGuardrails } = await import("./dynamic-workflow");
+  const { prepareTaskInput } = await import("./dynamic-workflow");
   const augmentedInput = targetAgent
-    ? applyGuardrails(targetAgent, priorContextInput)
+    ? await prepareTaskInput(targetAgent, priorContextInput)
     : priorContextInput;
 
   await sendTelegram(msg.chat.id, `⏳ /${parsed.command}: ${route.description} çalışıyor...`);

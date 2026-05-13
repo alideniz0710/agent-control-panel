@@ -551,3 +551,78 @@ export async function handleAgents(chatId: number | string, send: SendFn): Promi
   });
   await send(chatId, `Agents (${agents.length}):\n\n` + lines.join("\n"));
 }
+
+// ── /memo ──────────────────────────────────────────────────────────────
+//
+// Adds an entry to the agent memory system, either to shared.md or to a
+// specific agent's file. Each entry is auto-timestamped (UTC ISO) so
+// the diff history is meaningful when reviewing later.
+//
+// Syntax:
+//   /memo <text>                       → appends to memory/shared.md
+//   /memo <agent-slug> <text>          → appends to memory/agents/<slug>.md
+//
+// Where <agent-slug> is one of: software-engineer, debug, personal-assistant
+// (we accept the bare slug, NOT "cc:software-engineer" — easier to type
+// on a phone keyboard).
+
+const KNOWN_AGENT_SLUGS: ReadonlySet<string> = new Set([
+  "software-engineer",
+  "debug",
+  "personal-assistant",
+  "pilot",
+  "data-analyst",
+]);
+
+export async function handleMemo(chatId: number | string, args: string, send: SendFn): Promise<void> {
+  const text = args.trim();
+  if (!text) {
+    await send(
+      chatId,
+      [
+        "Memory'ye not eklemek için:",
+        "",
+        "  /memo <text>                            → shared.md'ye ekler",
+        "  /memo software-engineer <text>          → agent dosyasına ekler",
+        "  /memo debug <text>",
+        "  /memo personal-assistant <text>",
+        "",
+        "Notlar otomatik tarih damgalı eklenir. Bir sonraki agent çağrısında yansır.",
+      ].join("\n"),
+    );
+    return;
+  }
+
+  // Detect optional agent slug as first word
+  const firstSpace = text.indexOf(" ");
+  let agentName: string | undefined;
+  let body: string;
+  if (firstSpace > 0) {
+    const head = text.slice(0, firstSpace);
+    if (KNOWN_AGENT_SLUGS.has(head)) {
+      agentName = `cc:${head}`;
+      body = text.slice(firstSpace + 1).trim();
+    } else {
+      body = text;
+    }
+  } else {
+    body = text;
+  }
+
+  if (!body) {
+    await send(chatId, `Agent slug verdiğin ama metin boş. Örnek: /memo software-engineer 'Use App Router not Pages'`);
+    return;
+  }
+
+  try {
+    const { appendMemoryEntry } = await import("./memory");
+    const result = await appendMemoryEntry(body, agentName ? { agentName } : {});
+    const fileLabel = agentName ? `agents/${agentName.replace(/^cc:/, "")}.md` : "shared.md";
+    await send(
+      chatId,
+      `✅ memory/${fileLabel}'e not eklendi (toplam ${(result.bytes / 1024).toFixed(1)}KB)\n\nBir sonraki agent çağrısında yansır.`,
+    );
+  } catch (e) {
+    await send(chatId, `❌ memo yazılamadı: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
