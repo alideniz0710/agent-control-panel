@@ -99,5 +99,45 @@ Backblaze B2 `b2_authorize_account` v3 returns `apiInfo.storageApi.{apiUrl, buck
 
 **Takeaway:** When using a new API, copy the exact response example from current docs into the type definition.
 
+### 2026-05-14 — Splitbill masa-ekleme HTTP 500 (env var çözümü)
+"Masa eklenemedi" hatası geldi. Önceki PR cache fix yapmıştı ama asıl sorun ayrıydı:
+- `NEXT_PUBLIC_RESTAURANT_ID` Vercel env vars'ta tanımlı değildi
+- Frontend `restaurant_id: undefined` gönderiyor, backend 400 dönüyordu
+- "Masa eklenemedi" toast'ı hata detayını gizliyordu
+
+**Fix:**
+1. Frontend artık eksik RESTAURANT_ID'yi tespit ediyor, açık hata mesajı veriyor
+2. POST handler artık Supabase error code+message'ı response'a koyuyor (23503, 42P01 vs)
+3. QR_BASE_URL hardcoded 192.168.1.112'den window.location.origin'a çevrildi
+4. Splitbill'in tüm env vars'ları (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, NEXT_PUBLIC_SUPABASE_ANON_KEY, NEXT_PUBLIC_RESTAURANT_ID, JWT_SECRET, NEXT_PUBLIC_APP_URL) Vercel'da set edildi
+
+**Takeaway:** `process.env.X!` non-null assertion build'i geçer ama runtime'da `undefined` döner. Defensive default + UI'da diagnostic message yaz.
+
+### 2026-05-14 — Panel cost optimizations shipped
+$25 / 2 gün cost'tan şikayet sonrası şunlar canlıya alındı:
+1. **Failure-path memory write**: Agent fail edince "❌ HATA / ✅ DOĞRU" formatında memory/agents/<slug>.md'ye satır ekleniyor. Aynı hata 2. kez yapılmayı azaltıyor.
+2. **Model auto-selection**: Görev metnindeki [XS]/[S] → Haiku, [M] → Sonnet (default), [L] → Opus. Çoğu /se [S] olduğundan Haiku'ya gidiyor (5x ucuz).
+3. **Duplicate detection**: Aynı /se /debug /pa komutu 5 dk içinde iki kez gönderilirse 2. seferde dispatch yapılmıyor, runId'le geri dönülüyor. Accidental retry'lar engelleniyor.
+4. **Prompt caching**: Direct Anthropic SDK çağrılarında system prompt cache_control: ephemeral. Cc:* agent'lar Claude Code SDK'sinden geçtiği için onlara dokunmuyor — sadece orchestrator-router + memory synthesizer etkilenir.
+5. **/cost command**: Telegram'dan son N saat cost dağılımı (agent başına + total + fail count). /cost 24, /cost 48, /cost 168 gibi.
+6. **Beklenen baseline**: Eskiden $12/gün → bugün $2/gün → Korea ortamında $1-1.5/gün.
+
+### 2026-05-14 — Memory system + auto-write
+Agent'ların "aynı hatayı tekrar tekrar yapıyor" şikayetinden sonra memory/ klasörü altında filesystem-based context store kuruldu:
+- `memory/shared.md`: tüm agent'lar okur
+- `memory/agents/<slug>.md`: agent-spesifik
+- Her görev oluşturulurken otomatik prepend ediliyor
+- Her başarılı task sonrası Haiku ile synthesize edip otomatik yazılıyor (cost ~$0.001/task)
+- Her fail task sonrası "ne yanlış yaptım, tekrarlama" formatında yazılıyor
+- Founder Telegram'dan `/memo <text>` veya `/memo <agent> <text>` ile manuel ekleyebilir
+- Auto-write entries `<!-- auto-write entries below -->` marker'ından sonra biriker, 80KB'ı geçince eskisi FIFO prune
+
+### 2026-05-14 — Tailscale Funnel + webhook receiver
+Public webhook receiver kuruldu:
+- Tailscale Funnel ile `https://alidenizs-mac-mini.tail82cdd7.ts.net/api/hooks/{github,vercel,sentry}` public
+- Middleware sadece `/api/hooks/*`, `/api/webhook`, `/api/health` paths'ini public izinli tutar; geri kalanı tailnet-only veya ADMIN_TOKEN'lı
+- Her provider için HMAC signature verify (GitHub SHA256, Vercel SHA1, Sentry SHA256)
+- GitHub + Vercel webhooks aktif ve doğrulandı, Sentry webhook kayıtlı ama SDK splitbill'de henüz yok
+- Tailnet-only browser erişimi için `tailscale serve --bg --https=8443 http://127.0.0.1:3000` ayarı kurulu
 
 <!-- auto-write entries below -->

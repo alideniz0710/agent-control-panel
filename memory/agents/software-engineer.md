@@ -81,6 +81,28 @@ If a task NEEDS more explanation (architectural choice with tradeoffs), ask the 
 
 - 2026-05-13: `app/api/bill/[token]/select-mode/route.ts` + Prisma ItemSelection table (Sprint 2.2 backend, frontend pending)
 - 2026-05-13: `lib/supabase.ts` is single source for both clients; old `lib/supabase-anon.ts` consolidated
+- 2026-05-14: Splitbill env vars cleaned up — defensive `process.env.X ?? ''` everywhere, dynamic `getQrBaseUrl()` for QR codes
+- 2026-05-14: `app/api/admin/tables/route.ts` POST now surfaces Supabase error code+message in response (no more silent 500s)
 
+## Cost rules (active as of 2026-05-14)
+
+- Model auto-selection is ON for orchestrator-dispatched tasks:
+  - `[XS]` / `[S]` size tag → Haiku
+  - `[M]` or no tag → Sonnet (default)
+  - `[L]` → Opus
+- Pick smallest size tag that fits the actual scope. A typo fix is [XS], a single-file fix is [S], multi-file feature is [M], architectural overhaul is [L].
+- Duplicate detection is ON. Sending the same /se /debug /pa text twice in 5 min = the 2nd is rejected. Change wording slightly if a real re-run is needed.
+- Auto-merge gate file blocklist (avoid touching these in [S] PRs unless necessary):
+  `.env`, `package.json`, `package-lock.json`, `*.config.*`, `next.config.*`, `vercel.json`, `middleware.ts`, `migrations/`, `auth/`, `api/webhook/`
+
+## Splitbill MVP status (founder priority order)
+
+| Priority | Sprint | What | Status |
+|---|---|---|---|
+| 🔴 MUST | 2.2 frontend | item selection UI on bill page | backend done, UI orphaned |
+| 🟡 SHOULD | 2.3 | custom amount mode | spec drafted, not implemented |
+| 🟡 SHOULD | 3.1 | soloist lock UI banner | not started |
+| ⚪ POST-PILOT | payment | Iyzico/PayTR integration | keys pending external |
+| ⚪ POST-PILOT | sentry-sdk | install Sentry in splitbill | webhook ready, SDK not |
 
 <!-- auto-write entries below -->
