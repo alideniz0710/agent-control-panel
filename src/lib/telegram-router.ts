@@ -73,6 +73,7 @@ export function buildHelp(): string {
     "/backup [status|now] — B2'deki backup durumu / manuel backup",
     "/sync — Mac'in develop branch'ini GitHub'tan günceller",
     "/memo [agent] <text> — agent memory'sine not ekler (boş çağırınca yardım)",
+    "/cost [hours] — son N saatlik cost dağılımı (default 24)",
     "/help — bu listeyi göster",
   ].join("\n");
 }
@@ -90,6 +91,7 @@ export const SYSTEM_COMMANDS: ReadonlySet<string> = new Set([
   "undo",
   "backup",
   "memo",
+  "cost",
 ]);
 
 // Patterns that strongly suggest the user is asking the agent to do

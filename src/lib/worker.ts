@@ -319,6 +319,26 @@ async function executeTask(task: ClaimedTask): Promise<void> {
     status: timedOut ? "timeout" : "failed",
     stepOrder: task.stepOrder,
   });
+
+  // Failure path memory write — fire-and-forget. Same shape as the
+  // success path, but `taskOutput` is the error message and we mark
+  // it as a failure so the synthesizer prompts for "what went wrong,
+  // don't repeat this" learnings. Repeated identical failures across
+  // tasks were the main cost-drain reported by founder.
+  void (async () => {
+    try {
+      const { autoWriteMemory } = await import("./memory-writer");
+      await autoWriteMemory({
+        agentName: task.agent.name,
+        taskInput: task.input ?? "",
+        taskOutput: `[FAILURE] ${message}`,
+        failed: true,
+      });
+    } catch (e) {
+      console.warn("[worker] failure-path memory autoWrite skipped:", e instanceof Error ? e.message : e);
+    }
+  })();
+
   await failRun(task.runId, `step ${task.stepOrder} ${timedOut ? "timed out" : "failed"}: ${message}`).catch(() => undefined);
 }
 

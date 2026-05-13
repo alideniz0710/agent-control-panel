@@ -35,6 +35,7 @@ import {
   handleUndo,
   handleBackup,
   handleMemo,
+  handleCost,
 } from "./control-commands";
 
 const POLL_TIMEOUT_SECONDS = 25;     // long-poll: server waits this long for a message
@@ -333,6 +334,9 @@ async function handleMessage(msg: NonNullable<TelegramUpdate["message"]>): Promi
         return;
       case "memo":
         await handleMemo(msg.chat.id, parsed.args, sendTelegram);
+        return;
+      case "cost":
+        await handleCost(msg.chat.id, parsed.args, sendTelegram);
         return;
     }
   }
